@@ -296,3 +296,77 @@ def get_global_trending():
             data.append({"ticker": t, "change": round(change, 2), "price": round(i.last_price, 2)})
         except: continue
     return sorted(data, key=lambda x: abs(x['change']), reverse=True)
+
+
+
+
+
+
+
+
+
+# --- MISSING WATCHLIST LOGIC ---
+
+# 1. Helper to get the current logged-in user from the token
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return username
+
+# 2. Add a stock to favorites
+@app.post("/favorites/{ticker}")
+def add_favorite(ticker: str, username: str = Depends(get_current_user)):
+    ticker = ticker.upper()
+    # Check if already exists to avoid duplicates
+    existing = fav_collection.find_one({"username": username, "ticker": ticker})
+    if existing:
+        return {"message": "Already in watchlist"}
+    
+    fav_collection.insert_one({
+        "username": username,
+        "ticker": ticker,
+        "added_at": datetime.utcnow()
+    })
+    return {"message": f"Added {ticker} to watchlist"}
+
+# 3. Get all favorites for the user
+@app.get("/favorites")
+def get_favorites(username: str = Depends(get_current_user)):
+    # Find all favorites for this user
+    cursor = fav_collection.find({"username": username})
+    favorites = [doc["ticker"] for doc in cursor]
+    
+    # Optional: Get live prices for them immediately
+    results = []
+    if favorites:
+        try:
+            stocks = yf.Tickers(" ".join(favorites))
+            for t in favorites:
+                try:
+                    info = stocks.tickers[t].fast_info
+                    results.append({
+                        "ticker": t,
+                        "price": round(info.last_price, 2),
+                        "change": round(info.last_price - info.previous_close, 2),
+                        "percent": round(((info.last_price - info.previous_close) / info.previous_close) * 100, 2)
+                    })
+                except:
+                    results.append({"ticker": t, "error": "Data unavailable"})
+        except:
+            pass
+            
+    return results
+
+# 4. Remove a stock from favorites
+@app.delete("/favorites/{ticker}")
+def remove_favorite(ticker: str, username: str = Depends(get_current_user)):
+    ticker = ticker.upper()
+    result = fav_collection.delete_one({"username": username, "ticker": ticker})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Ticker not found in watchlist")
+    return {"message": f"Removed {ticker}"}

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pymongo
+requests
+yfinance
+passlib
+python-jose
+python-multipart
+bcrypt==4.0.1
