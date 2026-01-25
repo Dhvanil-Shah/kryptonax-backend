@@ -15,19 +15,25 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import random
 import string
+import os
+from dotenv import load_dotenv
+
+# 1. LOAD ENVIRONMENT VARIABLES
+load_dotenv()
 
 # --- CONFIGURATION ---
 API_KEY = "9f07c51e4e2145569ccba561e4e0d81a" 
-MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0" 
-SECRET_KEY = "supersecretkey" 
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 
+# ⚠️ SECURITY WARNING: Move this to your .env file in production!
+MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0"
+
 # --- EMAIL CONFIG (Titan/GoDaddy) ---
-# ⚠️ IMPORTANT: You MUST put your actual email password here or it will fail
-SMTP_SERVER = "smtp.titan.email"
-SMTP_PORT = 587 
-SMTP_EMAIL = "kryptonaxofficial@kryptonax.com" 
-SMTP_PASSWORD = "(!#Kryptonaxofficial1!#)" # <--- REPLACE THIS WITH REAL PASSWORD
+SMTP_SERVER = os.getenv("MAIL_SERVER", "smtp.titan.email")
+SMTP_PORT = int(os.getenv("MAIL_PORT", 587))
+SMTP_EMAIL = os.getenv("MAIL_FROM", "kryptonaxofficial@kryptonax.com")
+SMTP_PASSWORD = os.getenv("MAIL_PASSWORD", "(!#Kryptonaxofficial1!#)")
 
 # --- SETUP ---
 app = FastAPI()
@@ -41,21 +47,34 @@ app.add_middleware(
 )
 
 client = pymongo.MongoClient(MONGO_URI)
-db = client["stock_news_db"]
+db = client["kryptonax"]
+users_collection = db["users"]
+subscriptions_collection = db["subscriptions"]
 news_collection = db["news_articles"]
 fav_collection = db["favorites"]
-users_collection = db["users"]
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # --- MODELS ---
+class UserRegister(BaseModel):
+    username: str
+    password: str
+    first_name: str
+    last_name: str
+    mobile: str
+
 class UserCreate(BaseModel):
     username: str
     password: str
     first_name: str
     last_name: str
     mobile: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user_name: str
 
 class ForgotPasswordRequest(BaseModel):
     username: str
@@ -66,8 +85,12 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 # --- HELPERS ---
-def get_password_hash(password): return pwd_context.hash(password)
-def verify_password(plain, hashed): return pwd_context.verify(plain, hashed)
+def get_password_hash(password): 
+    return pwd_context.hash(password)
+
+def verify_password(plain, hashed): 
+    return pwd_context.verify(plain, hashed)
+
 def create_access_token(data: dict):
     to_encode = data.copy()
     to_encode.update({"exp": datetime.utcnow() + timedelta(days=7)})
@@ -76,6 +99,22 @@ def create_access_token(data: dict):
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
+# --- CURRENT USER HELPER ---
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    user = users_collection.find_one({"username": username})
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+# --- EMAIL FUNCTIONS ---
 def send_email_otp(to_email, otp):
     print(f"📧 Attempting to send email to {to_email}...")
     try:
@@ -97,20 +136,45 @@ def send_email_otp(to_email, otp):
         """
         msg.attach(MIMEText(body, 'html'))
 
-        # --- UPDATED CONNECTION BLOCK (TLS) ---
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT) # Use standard SMTP
-        server.ehlo()      # Identify ourselves
-        server.starttls()  # Secure the connection
-        server.ehlo()      # Re-identify as encrypted
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.send_message(msg)
         server.quit()
-        # --------------------------------------
 
         print(f"✅ Email OTP successfully sent to {to_email}")
         return True
     except Exception as e:
         print(f"❌ EMAIL FAILED: {e}")
+        return False
+
+def send_welcome_email(email_to: str, ticker: str):
+    html = f"""
+    <h3>Kryptonax Alert</h3>
+    <p>You are now subscribed to updates for: <b>{ticker}</b></p>
+    <p>We will notify you on significant market movement via email.</p>
+    """
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_EMAIL
+        msg['To'] = email_to
+        msg['Subject'] = f"Alert Subscribed: {ticker}"
+        msg.attach(MIMEText(html, 'html'))
+        
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        
+        print(f"✅ Welcome email sent to {email_to}")
+        return True
+    except Exception as e:
+        print(f"Email Error: {e}")
         return False
 def send_sms_otp_simulated(mobile, otp):
     print("\n" + "="*40)
@@ -118,10 +182,18 @@ def send_sms_otp_simulated(mobile, otp):
     print(f"🔑 OTP MESSAGE: Your Kryptonax code is: [{otp}]")
     print("="*40 + "\n")
 
+# ==========================================
+#               ENDPOINTS
+# ==========================================
+
+@app.get("/")
+def home():
+    return {"message": "Kryptonax API Live"}
+
 # --- AUTH ENDPOINTS ---
 
 @app.post("/register")
-def register(user: UserCreate):
+def register(user: UserRegister):
     clean_username = user.username.lower().strip()
     if users_collection.find_one({"username": clean_username}):
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -134,19 +206,22 @@ def register(user: UserCreate):
     })
     return {"message": "User created successfully"}
 
-@app.post("/token")
+@app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
     clean_username = form_data.username.lower().strip()
     user = users_collection.find_one({"username": clean_username})
     if not user or not verify_password(form_data.password, user["password"]):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    token = create_access_token(data={"sub": user["username"]})
+    user_name = user.get("first_name", "User")
     return {
-        "access_token": create_access_token(data={"sub": user["username"]}), 
+        "access_token": token, 
         "token_type": "bearer", 
-        "user_name": user.get("first_name", "User")
+        "user_name": user_name
     }
 
-# --- FORGOT PASSWORD FLOW (FIXED) ---
+# --- FORGOT PASSWORD FLOW ---
 
 @app.post("/forgot-password")
 def forgot_password(req: ForgotPasswordRequest):
@@ -180,10 +255,11 @@ def reset_password(req: ResetPasswordRequest):
     clean_username = req.username.lower().strip()
     user = users_collection.find_one({"username": clean_username})
     
-    if not user: raise HTTPException(status_code=400, detail="User not found")
+    if not user: 
+        raise HTTPException(status_code=400, detail="User not found")
     
     # DEBUGGING: Print what is happening
-    received_otp = req.otp.strip() # Remove spaces
+    received_otp = req.otp.strip()
     stored_otp = user.get("otp_code")
     
     print(f"🔍 DEBUG RESET: User={clean_username} | Stored OTP='{stored_otp}' | Input OTP='{received_otp}'")
@@ -207,6 +283,107 @@ def reset_password(req: ResetPasswordRequest):
     print("✅ Password reset successful")
     
     return {"message": "Password reset successful! Please login."}
+
+# --- SUBSCRIBE ENDPOINTS (BELL ICON LOGIC) ---
+
+# 1. SUBSCRIBE (Enable Bell)
+@app.post("/subscribe/{ticker}", status_code=status.HTTP_201_CREATED)
+def subscribe_to_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    
+    # Check if already subscribed
+    existing = subscriptions_collection.find_one({
+        "username": username,
+        "ticker": ticker
+    })
+    
+    if existing:
+        return {"message": f"Already subscribed to {ticker}"}
+
+    # Add subscription to DB
+    subscriptions_collection.insert_one({
+        "username": username,
+        "ticker": ticker
+    })
+    
+    # Send Email Notification
+    send_welcome_email(username, ticker)
+    
+    return {"message": f"Successfully subscribed to {ticker}"}
+
+# 2. UNSUBSCRIBE (Disable Bell)
+@app.delete("/subscribe/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
+def unsubscribe_from_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+
+    # Delete subscription from DB
+    result = subscriptions_collection.delete_one({
+        "username": username,
+        "ticker": ticker
+    })
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    return
+
+# 3. GET FAVORITES (Restore Bell State on Refresh)
+@app.get("/favorites")
+def get_favorites(current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    
+    # Find all tickers this user is subscribed to
+    subs = list(subscriptions_collection.find({"username": username}))
+    
+    # Also get watchlist favorites with live prices
+    fav_tickers = [doc["ticker"] for doc in fav_collection.find({"username": username})]
+    results = [{"ticker": sub["ticker"]} for sub in subs]
+    
+    # Add watchlist favorites with live prices
+    if fav_tickers:
+        try:
+            stocks = yf.Tickers(" ".join(fav_tickers))
+            for t in fav_tickers:
+                try:
+                    info = stocks.tickers[t].fast_info
+                    results.append({
+                        "ticker": t,
+                        "price": round(info.last_price, 2),
+                        "change": round(info.last_price - info.previous_close, 2),
+                        "percent": round(((info.last_price - info.previous_close) / info.previous_close) * 100, 2)
+                    })
+                except:
+                    pass
+        except:
+            pass
+    
+    return results
+
+# 4. Add a stock to favorites (Watchlist)
+@app.post("/favorites/{ticker}")
+def add_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    ticker = ticker.upper()
+    existing = fav_collection.find_one({"username": username, "ticker": ticker})
+    if existing:
+        return {"message": "Already in watchlist"}
+    
+    fav_collection.insert_one({
+        "username": username,
+        "ticker": ticker,
+        "added_at": datetime.utcnow()
+    })
+    return {"message": f"Added {ticker} to watchlist"}
+
+# 5. Remove a stock from favorites
+@app.delete("/favorites/{ticker}")
+def remove_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    ticker = ticker.upper()
+    result = fav_collection.delete_one({"username": username, "ticker": ticker})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Ticker not found in watchlist")
+    return {"message": f"Removed {ticker}"}
 
 # --- DATA ENDPOINTS (Condensed) ---
 def fetch_from_api_and_save(ticker):
@@ -302,71 +479,3 @@ def get_global_trending():
 
 
 
-
-
-
-# --- MISSING WATCHLIST LOGIC ---
-
-# 1. Helper to get the current logged-in user from the token
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return username
-
-# 2. Add a stock to favorites
-@app.post("/favorites/{ticker}")
-def add_favorite(ticker: str, username: str = Depends(get_current_user)):
-    ticker = ticker.upper()
-    # Check if already exists to avoid duplicates
-    existing = fav_collection.find_one({"username": username, "ticker": ticker})
-    if existing:
-        return {"message": "Already in watchlist"}
-    
-    fav_collection.insert_one({
-        "username": username,
-        "ticker": ticker,
-        "added_at": datetime.utcnow()
-    })
-    return {"message": f"Added {ticker} to watchlist"}
-
-# 3. Get all favorites for the user
-@app.get("/favorites")
-def get_favorites(username: str = Depends(get_current_user)):
-    # Find all favorites for this user
-    cursor = fav_collection.find({"username": username})
-    favorites = [doc["ticker"] for doc in cursor]
-    
-    # Optional: Get live prices for them immediately
-    results = []
-    if favorites:
-        try:
-            stocks = yf.Tickers(" ".join(favorites))
-            for t in favorites:
-                try:
-                    info = stocks.tickers[t].fast_info
-                    results.append({
-                        "ticker": t,
-                        "price": round(info.last_price, 2),
-                        "change": round(info.last_price - info.previous_close, 2),
-                        "percent": round(((info.last_price - info.previous_close) / info.previous_close) * 100, 2)
-                    })
-                except:
-                    results.append({"ticker": t, "error": "Data unavailable"})
-        except:
-            pass
-            
-    return results
-
-# 4. Remove a stock from favorites
-@app.delete("/favorites/{ticker}")
-def remove_favorite(ticker: str, username: str = Depends(get_current_user)):
-    ticker = ticker.upper()
-    result = fav_collection.delete_one({"username": username, "ticker": ticker})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Ticker not found in watchlist")
-    return {"message": f"Removed {ticker}"}
