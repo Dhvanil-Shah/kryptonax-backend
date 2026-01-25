@@ -190,3 +190,5 @@ async def batch_quotes(tickers: List[str]):
                 res[t] = {"price": round(p, 2), "percent": round(change, 2), "color": "#00e676" if change >= 0 else "#ff1744"}
         except: continue
     return res
+
+# FORCE UPDATE: TITAN EMAIL CONFIG
