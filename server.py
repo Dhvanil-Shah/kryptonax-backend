@@ -341,9 +341,8 @@ def subscribe_to_ticker(ticker: str, current_user: dict = Depends(get_current_us
         "ticker": ticker
     })
     
-    # Send Email Notification (only if authenticated user)
-    if not current_user.get("is_guest"):
-        send_welcome_email(username, ticker)
+    # Send Email Notification
+    send_welcome_email(username, ticker)
     
     return {"message": f"Successfully subscribed to {ticker}"}
 
