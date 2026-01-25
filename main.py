@@ -190,5 +190,14 @@ async def batch_quotes(tickers: List[str]):
                 res[t] = {"price": round(p, 2), "percent": round(change, 2), "color": "#00e676" if change >= 0 else "#ff1744"}
         except: continue
     return res
-
+@app.post("/subscribe/{ticker}")
+async def subscribe(ticker: str, current_user: dict = Depends(get_current_user)):
+    await users_collection.update_one(
+        {"username": current_user["username"]},
+        {"$addToSet": {"subscriptions": ticker}}
+    )
+    # Trigger Email Notification Only
+    await send_welcome_email(current_user["username"], ticker)
+        
+    return {"status": "subscribed", "ticker": ticker}
 # FORCE UPDATE: TITAN EMAIL CONFIG
