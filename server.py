@@ -158,8 +158,8 @@ def send_email_otp(to_email, otp):
         return False
     except TimeoutError as e:
         print(f"❌ TIMEOUT: Cannot reach {SMTP_SERVER}:{SMTP_PORT}. Check MAIL_SERVER in .env")
-        print(f"   GoDaddy Titan: smtp.titan.email (port 465)")
-        print(f"   Or use: smtpout.secureserver.net")
+        print(f"   GoDaddy Standard Email: smtpout.secureserver.net (port 465)")
+        print(f"   Verify credentials are correct")
         return False
     except smtplib.SMTPException as e:
         print(f"❌ SMTP ERROR: {e}")
@@ -200,8 +200,8 @@ def send_welcome_email(email_to: str, ticker: str):
         return False
     except TimeoutError as e:
         print(f"❌ TIMEOUT: Cannot reach {SMTP_SERVER}:{SMTP_PORT}. Check MAIL_SERVER in .env")
-        print(f"   GoDaddy Titan: smtp.titan.email (port 465)")
-        print(f"   Or use: smtpout.secureserver.net")
+        print(f"   GoDaddy Standard Email: smtpout.secureserver.net (port 465)")
+        print(f"   Verify credentials are correct")
         return False
     except smtplib.SMTPException as e:
         print(f"❌ SMTP ERROR: {e}")
