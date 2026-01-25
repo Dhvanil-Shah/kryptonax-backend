@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -11,60 +11,19 @@ import os
 from dotenv import load_dotenv
 import yfinance as yf
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
-from fastapi import FastAPI, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from pymongo import MongoClient
-# You likely already have your own imports for models and database like:
-# from . import models, schemas, database
-# from .auth import get_current_user
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
 
+# --- CONFIGURATION ---
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback_secret_key")
+ALGORITHM = "HS256"
+
+# ⚠️ SECURITY WARNING: Move this to your .env file in production!
+MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0"
+
+# --- APP INITIALIZATION ---
 app = FastAPI()
-@router.post("/subscribe/{ticker}", status_code=status.HTTP_201_CREATED)
-def subscribe_to_ticker(
-    ticker: str, 
-    db: Session = Depends(get_db), 
-    current_user: int = Depends(oauth2.get_current_user)
-):
-    # 1. Check if already subscribed
-    existing_sub = db.query(models.Subscription).filter(
-        models.Subscription.user_id == current_user.id,
-        models.Subscription.ticker == ticker
-    ).first()
-    
-    if existing_sub:
-        return {"message": f"Already subscribed to {ticker}"}
-
-    # 2. Add new subscription
-    new_sub = models.Subscription(user_id=current_user.id, ticker=ticker)
-    db.add(new_sub)
-    db.commit()
-    
-    return {"message": f"Successfully subscribed to {ticker}"}
-
-# --- 2. UNSUBSCRIBE (Disable Bell) ---
-@router.delete("/subscribe/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
-def unsubscribe_from_ticker(
-    ticker: str, 
-    db: Session = Depends(get_db), 
-    current_user: int = Depends(oauth2.get_current_user)
-):
-    # 1. Find the subscription
-    sub_query = db.query(models.Subscription).filter(
-        models.Subscription.user_id == current_user.id,
-        models.Subscription.ticker == ticker
-    )
-
-    if not sub_query.first():
-        raise HTTPException(status_code=404, detail="Subscription not found")
-
-    # 2. Delete it
-    sub_query.delete(synchronize_session=False)
-    db.commit()
-    
-    return # 204 returns no body
 
 # --- CORS ---
 app.add_middleware(
@@ -75,12 +34,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION ---
-SECRET_KEY = os.getenv("SECRET_KEY", "fallback_secret_key")
-ALGORITHM = "HS256"
-MONGO_URI = os.getenv("MONGO_URI")
+# --- DATABASE CONNECTION (MONGODB - ASYNC) ---
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+db = client.kryptonax
+users_collection = db.users
+subscriptions_collection = db.subscriptions  # Separate collection for easier management
 
-# Email Config
+# --- EMAIL CONFIGURATION ---
 conf = ConnectionConfig(
     MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
     MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
@@ -93,18 +53,13 @@ conf = ConnectionConfig(
     VALIDATE_CERTS = True
 )
 
-# --- DATABASE ---
-client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = client.kryptonax
-users_collection = db.users
-
 # --- MODELS ---
 class UserRegister(BaseModel):
     username: str
     password: str
     first_name: str
     last_name: str
-    mobile: str  # We keep this for record, but won't use it for SMS
+    mobile: str
 
 class Token(BaseModel):
     access_token: str
@@ -125,6 +80,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         if username is None: raise HTTPException(status_code=401)
     except JWTError:
         raise HTTPException(status_code=401)
+    
     user = await users_collection.find_one({"username": username})
     if user is None: raise HTTPException(status_code=401)
     return user
@@ -148,11 +104,15 @@ async def send_welcome_email(email_to: str, ticker: str):
     except Exception as e:
         print(f"Email Error: {e}")
 
-# --- ENDPOINTS ---
+# ==========================================
+#               ENDPOINTS
+# ==========================================
 
 @app.get("/")
 def home():
     return {"message": "Kryptonax API Live"}
+
+# --- AUTH ENDPOINTS ---
 
 @app.post("/register")
 async def register(user: UserRegister):
@@ -171,20 +131,65 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(status_code=400, detail="Invalid credentials")
     
     token = jwt.encode({"sub": user["username"]}, SECRET_KEY, algorithm=ALGORITHM)
-    return {"access_token": token, "token_type": "bearer", "user_name": user.get("first_name", "User")}
+    # Return first name if available, otherwise "User"
+    user_name = user.get("first_name", "User")
+    return {"access_token": token, "token_type": "bearer", "user_name": user_name}
 
-@app.post("/subscribe/{ticker}")
-async def subscribe(ticker: str, current_user: dict = Depends(get_current_user)):
-    await users_collection.update_one(
-        {"username": current_user["username"]},
-        {"$addToSet": {"subscriptions": ticker}}
-    )
-    # Trigger Email Notification Only
-    await send_welcome_email(current_user["username"], ticker)
-        
-    return {"status": "subscribed", "ticker": ticker}
+# --- SUBSCRIBE ENDPOINTS (BELL ICON LOGIC) ---
+
+# 1. SUBSCRIBE (Enable Bell)
+@app.post("/subscribe/{ticker}", status_code=status.HTTP_201_CREATED)
+async def subscribe_to_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    
+    # Check if already subscribed
+    existing = await subscriptions_collection.find_one({
+        "username": username,
+        "ticker": ticker
+    })
+    
+    if existing:
+        return {"message": f"Already subscribed to {ticker}"}
+
+    # Add subscription to DB
+    await subscriptions_collection.insert_one({
+        "username": username,
+        "ticker": ticker
+    })
+    
+    # Send Email Notification
+    await send_welcome_email(username, ticker)
+    
+    return {"message": f"Successfully subscribed to {ticker}"}
+
+# 2. UNSUBSCRIBE (Disable Bell)
+@app.delete("/subscribe/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
+async def unsubscribe_from_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+
+    # Delete subscription from DB
+    result = await subscriptions_collection.delete_one({
+        "username": username,
+        "ticker": ticker
+    })
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    return
+
+# 3. GET FAVORITES (Restore Bell State on Refresh)
+@app.get("/favorites")
+async def get_favorites(current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    # Find all tickers this user is subscribed to
+    cursor = subscriptions_collection.find({"username": username})
+    subs = await cursor.to_list(length=100)
+    # Return format expected by Frontend
+    return [{"ticker": sub["ticker"]} for sub in subs]
 
 # --- DATA ENDPOINTS ---
+
 @app.get("/quote/{ticker}")
 async def get_quote(ticker: str):
     try:
@@ -239,16 +244,3 @@ async def batch_quotes(tickers: List[str]):
                 res[t] = {"price": round(p, 2), "percent": round(change, 2), "color": "#00e676" if change >= 0 else "#ff1744"}
         except: continue
     return res
-@app.post("/subscribe/{ticker}")
-async def subscribe(ticker: str, current_user: dict = Depends(get_current_user)):
-    await users_collection.update_one(
-        {"username": current_user["username"]},
-        {"$addToSet": {"subscriptions": ticker}}
-    )
-    # Trigger Email Notification Only
-    await send_welcome_email(current_user["username"], ticker)
-        
-    return {"status": "subscribed", "ticker": ticker}
-# FORCE UPDATE: TITAN EMAIL CONFIG
-
-# FINAL DEPLOYMENT CHECK V2
