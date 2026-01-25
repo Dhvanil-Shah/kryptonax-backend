@@ -201,3 +201,5 @@ async def subscribe(ticker: str, current_user: dict = Depends(get_current_user))
         
     return {"status": "subscribed", "ticker": ticker}
 # FORCE UPDATE: TITAN EMAIL CONFIG
+
+# FINAL DEPLOYMENT CHECK V2
