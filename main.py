@@ -11,11 +11,60 @@ import os
 from dotenv import load_dotenv
 import yfinance as yf
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
+from fastapi import FastAPI, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from pymongo import MongoClient
+# You likely already have your own imports for models and database like:
+# from . import models, schemas, database
+# from .auth import get_current_user
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
 
 app = FastAPI()
+@router.post("/subscribe/{ticker}", status_code=status.HTTP_201_CREATED)
+def subscribe_to_ticker(
+    ticker: str, 
+    db: Session = Depends(get_db), 
+    current_user: int = Depends(oauth2.get_current_user)
+):
+    # 1. Check if already subscribed
+    existing_sub = db.query(models.Subscription).filter(
+        models.Subscription.user_id == current_user.id,
+        models.Subscription.ticker == ticker
+    ).first()
+    
+    if existing_sub:
+        return {"message": f"Already subscribed to {ticker}"}
+
+    # 2. Add new subscription
+    new_sub = models.Subscription(user_id=current_user.id, ticker=ticker)
+    db.add(new_sub)
+    db.commit()
+    
+    return {"message": f"Successfully subscribed to {ticker}"}
+
+# --- 2. UNSUBSCRIBE (Disable Bell) ---
+@router.delete("/subscribe/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
+def unsubscribe_from_ticker(
+    ticker: str, 
+    db: Session = Depends(get_db), 
+    current_user: int = Depends(oauth2.get_current_user)
+):
+    # 1. Find the subscription
+    sub_query = db.query(models.Subscription).filter(
+        models.Subscription.user_id == current_user.id,
+        models.Subscription.ticker == ticker
+    )
+
+    if not sub_query.first():
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    # 2. Delete it
+    sub_query.delete(synchronize_session=False)
+    db.commit()
+    
+    return # 204 returns no body
 
 # --- CORS ---
 app.add_middleware(
