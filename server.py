@@ -32,8 +32,9 @@ MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?ap
 # --- EMAIL CONFIG (Titan/GoDaddy) ---
 SMTP_SERVER = os.getenv("MAIL_SERVER", "smtp.titan.email")
 SMTP_PORT = int(os.getenv("MAIL_PORT", 587))
-SMTP_EMAIL = os.getenv("MAIL_FROM", "kryptonaxofficial@kryptonax.com")
+SMTP_USERNAME = os.getenv("MAIL_USERNAME", "kryptonaxofficial@kryptonax.com")
 SMTP_PASSWORD = os.getenv("MAIL_PASSWORD", "(!#Kryptonaxofficial1!#)")
+SMTP_FROM = os.getenv("MAIL_FROM", "kryptonaxofficial@kryptonax.com")
 
 # --- SETUP ---
 app = FastAPI()
@@ -116,10 +117,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 
 # --- EMAIL FUNCTIONS ---
 def send_email_otp(to_email, otp):
-    print(f"📧 Attempting to send email to {to_email}...")
+    print(f"📧 Attempting to send OTP email to {to_email}...")
     try:
         msg = MIMEMultipart()
-        msg['From'] = SMTP_EMAIL
+        msg['From'] = SMTP_FROM
         msg['To'] = to_email
         msg['Subject'] = "Kryptonax Password Reset OTP"
 
@@ -136,18 +137,28 @@ def send_email_otp(to_email, otp):
         """
         msg.attach(MIMEText(body, 'html'))
 
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        print(f"🔌 Connecting to SMTP {SMTP_SERVER}:{SMTP_PORT}...")
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        print(f"🔐 Authenticating with {SMTP_USERNAME}...")
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
         server.send_message(msg)
         server.quit()
 
-        print(f"✅ Email OTP successfully sent to {to_email}")
+        print(f"✅ OTP email successfully sent to {to_email}")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"❌ SMTP AUTH FAILED: Check username/password. Error: {e}")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"❌ SMTP ERROR: {e}")
+        return False
     except Exception as e:
-        print(f"❌ EMAIL FAILED: {e}")
+        print(f"❌ EMAIL FAILED: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def send_welcome_email(email_to: str, ticker: str):
@@ -158,23 +169,33 @@ def send_welcome_email(email_to: str, ticker: str):
     """
     try:
         msg = MIMEMultipart()
-        msg['From'] = SMTP_EMAIL
+        msg['From'] = SMTP_FROM
         msg['To'] = email_to
         msg['Subject'] = f"Alert Subscribed: {ticker}"
         msg.attach(MIMEText(html, 'html'))
         
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        print(f"🔌 Connecting to SMTP {SMTP_SERVER}:{SMTP_PORT}...")
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        print(f"🔐 Authenticating with {SMTP_USERNAME}...")
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
         server.send_message(msg)
         server.quit()
         
-        print(f"✅ Welcome email sent to {email_to}")
+        print(f"✅ Welcome email sent to {email_to} for {ticker}")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"❌ SMTP AUTH FAILED: Check username/password. Error: {e}")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"❌ SMTP ERROR: {e}")
+        return False
     except Exception as e:
-        print(f"Email Error: {e}")
+        print(f"❌ Welcome email error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 def send_sms_otp_simulated(mobile, otp):
     print("\n" + "="*40)
