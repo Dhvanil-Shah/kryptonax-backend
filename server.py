@@ -100,19 +100,23 @@ def create_access_token(data: dict):
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
-# --- CURRENT USER HELPER ---
+# --- CURRENT USER HELPER (Optional Auth) ---
 def get_current_user(token: str = Depends(oauth2_scheme)):
+    # If no token provided, return guest user
+    if not token:
+        return {"username": "guest", "is_guest": True}
+    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+            return {"username": "guest", "is_guest": True}
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        return {"username": "guest", "is_guest": True}
     
     user = users_collection.find_one({"username": username})
     if user is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        return {"username": "guest", "is_guest": True}
     return user
 
 # --- EMAIL FUNCTIONS ---
@@ -137,20 +141,25 @@ def send_email_otp(to_email, otp):
         """
         msg.attach(MIMEText(body, 'html'))
 
-        print(f"🔌 Connecting to SMTP {SMTP_SERVER}:{SMTP_PORT}...")
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
+        print(f"🔌 Connecting to SMTP {SMTP_SERVER}:{SMTP_PORT} (SSL, timeout=30s)...")
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
         print(f"🔐 Authenticating with {SMTP_USERNAME}...")
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        print(f"📤 Sending message...")
         server.send_message(msg)
         server.quit()
 
         print(f"✅ OTP email successfully sent to {to_email}")
         return True
     except smtplib.SMTPAuthenticationError as e:
-        print(f"❌ SMTP AUTH FAILED: Check username/password. Error: {e}")
+        print(f"❌ SMTP AUTH FAILED: Invalid credentials. Error: {e}")
+        print(f"   Username: {SMTP_USERNAME}")
+        print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
+        return False
+    except TimeoutError as e:
+        print(f"❌ TIMEOUT: Cannot reach {SMTP_SERVER}:{SMTP_PORT}. Check MAIL_SERVER in .env")
+        print(f"   GoDaddy Titan: smtp.titan.email (port 465)")
+        print(f"   Or use: smtpout.secureserver.net")
         return False
     except smtplib.SMTPException as e:
         print(f"❌ SMTP ERROR: {e}")
@@ -174,20 +183,25 @@ def send_welcome_email(email_to: str, ticker: str):
         msg['Subject'] = f"Alert Subscribed: {ticker}"
         msg.attach(MIMEText(html, 'html'))
         
-        print(f"🔌 Connecting to SMTP {SMTP_SERVER}:{SMTP_PORT}...")
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
+        print(f"🔌 Connecting to SMTP {SMTP_SERVER}:{SMTP_PORT} (SSL, timeout=30s)...")
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
         print(f"🔐 Authenticating with {SMTP_USERNAME}...")
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        print(f"📤 Sending message...")
         server.send_message(msg)
         server.quit()
         
         print(f"✅ Welcome email sent to {email_to} for {ticker}")
         return True
     except smtplib.SMTPAuthenticationError as e:
-        print(f"❌ SMTP AUTH FAILED: Check username/password. Error: {e}")
+        print(f"❌ SMTP AUTH FAILED: Invalid credentials. Error: {e}")
+        print(f"   Username: {SMTP_USERNAME}")
+        print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
+        return False
+    except TimeoutError as e:
+        print(f"❌ TIMEOUT: Cannot reach {SMTP_SERVER}:{SMTP_PORT}. Check MAIL_SERVER in .env")
+        print(f"   GoDaddy Titan: smtp.titan.email (port 465)")
+        print(f"   Or use: smtpout.secureserver.net")
         return False
     except smtplib.SMTPException as e:
         print(f"❌ SMTP ERROR: {e}")
@@ -310,7 +324,7 @@ def reset_password(req: ResetPasswordRequest):
 # 1. SUBSCRIBE (Enable Bell)
 @app.post("/subscribe/{ticker}", status_code=status.HTTP_201_CREATED)
 def subscribe_to_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
+    username = current_user.get("username", "guest")
     
     # Check if already subscribed
     existing = subscriptions_collection.find_one({
@@ -327,15 +341,16 @@ def subscribe_to_ticker(ticker: str, current_user: dict = Depends(get_current_us
         "ticker": ticker
     })
     
-    # Send Email Notification
-    send_welcome_email(username, ticker)
+    # Send Email Notification (only if authenticated user)
+    if not current_user.get("is_guest"):
+        send_welcome_email(username, ticker)
     
     return {"message": f"Successfully subscribed to {ticker}"}
 
 # 2. UNSUBSCRIBE (Disable Bell)
 @app.delete("/subscribe/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
 def unsubscribe_from_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
+    username = current_user.get("username", "guest")
 
     # Delete subscription from DB
     result = subscriptions_collection.delete_one({
@@ -351,7 +366,7 @@ def unsubscribe_from_ticker(ticker: str, current_user: dict = Depends(get_curren
 # 3. GET FAVORITES (Restore Bell State on Refresh)
 @app.get("/favorites")
 def get_favorites(current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
+    username = current_user.get("username", "guest")
     
     # Find all tickers this user is subscribed to
     subs = list(subscriptions_collection.find({"username": username}))
@@ -383,7 +398,7 @@ def get_favorites(current_user: dict = Depends(get_current_user)):
 # 4. Add a stock to favorites (Watchlist)
 @app.post("/favorites/{ticker}")
 def add_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
+    username = current_user.get("username", "guest")
     ticker = ticker.upper()
     existing = fav_collection.find_one({"username": username, "ticker": ticker})
     if existing:
@@ -399,7 +414,7 @@ def add_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
 # 5. Remove a stock from favorites
 @app.delete("/favorites/{ticker}")
 def remove_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
+    username = current_user.get("username", "guest")
     ticker = ticker.upper()
     result = fav_collection.delete_one({"username": username, "ticker": ticker})
     if result.deleted_count == 0:
