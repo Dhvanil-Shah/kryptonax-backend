@@ -6,16 +6,11 @@ from passlib.context import CryptContext
 import motor.motor_asyncio
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 from dotenv import load_dotenv
 import yfinance as yf
-from textblob import TextBlob
-import requests
-
-# --- NOTIFICATION LIBRARIES ---
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
-from twilio.rest import Client
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
@@ -31,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION (Reads from .env) ---
+# --- CONFIGURATION ---
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback_secret_key")
 ALGORITHM = "HS256"
 MONGO_URI = os.getenv("MONGO_URI")
@@ -49,11 +44,6 @@ conf = ConnectionConfig(
     VALIDATE_CERTS = True
 )
 
-# SMS Config
-TWILIO_SID = os.getenv("TWILIO_SID")
-TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-TWILIO_PHONE = os.getenv("TWILIO_PHONE")
-
 # --- DATABASE ---
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = client.kryptonax
@@ -65,7 +55,7 @@ class UserRegister(BaseModel):
     password: str
     first_name: str
     last_name: str
-    mobile: str
+    mobile: str  # We keep this for record, but won't use it for SMS
 
 class Token(BaseModel):
     access_token: str
@@ -90,12 +80,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     if user is None: raise HTTPException(status_code=401)
     return user
 
-# --- NOTIFICATIONS ---
+# --- NOTIFICATIONS (EMAIL ONLY) ---
 async def send_welcome_email(email_to: str, ticker: str):
     html = f"""
     <h3>Kryptonax Alert</h3>
     <p>You are now subscribed to updates for: <b>{ticker}</b></p>
-    <p>We will notify you on significant market movement.</p>
+    <p>We will notify you on significant market movement via email.</p>
     """
     try:
         message = MessageSchema(
@@ -108,18 +98,6 @@ async def send_welcome_email(email_to: str, ticker: str):
         await fm.send_message(message)
     except Exception as e:
         print(f"Email Error: {e}")
-
-def send_sms_alert(to_number: str, ticker: str):
-    try:
-        if not TWILIO_SID: return
-        client = Client(TWILIO_SID, TWILIO_TOKEN)
-        client.messages.create(
-            body=f"KRYPTONAX: Alert active for {ticker}.",
-            from_=TWILIO_PHONE,
-            to=to_number
-        )
-    except Exception as e:
-        print(f"SMS Error: {e}")
 
 # --- ENDPOINTS ---
 
@@ -152,10 +130,8 @@ async def subscribe(ticker: str, current_user: dict = Depends(get_current_user))
         {"username": current_user["username"]},
         {"$addToSet": {"subscriptions": ticker}}
     )
-    # Trigger notifications
+    # Trigger Email Notification Only
     await send_welcome_email(current_user["username"], ticker)
-    if current_user.get("mobile"):
-        send_sms_alert(current_user["mobile"], ticker)
         
     return {"status": "subscribed", "ticker": ticker}
 
@@ -174,11 +150,11 @@ async def get_quote(ticker: str):
 
 @app.get("/news/general")
 async def general_news():
-    # Placeholder for dev. Connect to NewsAPI here for real news.
     return [
-        {"title": "Tech Stocks Rally to New Highs", "sentiment": "positive", "publishedAt": datetime.now().isoformat(), "url": "#"},
-        {"title": "Inflation Concerns Persist in Global Markets", "sentiment": "negative", "publishedAt": datetime.now().isoformat(), "url": "#"},
-        {"title": "Oil Prices Stable Amid Supply Talks", "sentiment": "neutral", "publishedAt": datetime.now().isoformat(), "url": "#"}
+        {"title": "Tech Stocks Rally to New Highs", "sentiment": "positive", "publishedAt": datetime.now().isoformat(), "url": "#", "description": "Stocks hit record highs as AI adoption accelerates..."},
+        {"title": "Inflation Data Shows Cooling Trend", "sentiment": "positive", "publishedAt": datetime.now().isoformat(), "url": "#", "description": "Consumer prices rose less than expected..."},
+        {"title": "Oil Prices Volatile Amid Geopolitical Tension", "sentiment": "negative", "publishedAt": datetime.now().isoformat(), "url": "#", "description": "Energy sector faces uncertainty..."},
+        {"title": "Crypto Markets Stabilize After Correction", "sentiment": "neutral", "publishedAt": datetime.now().isoformat(), "url": "#", "description": "Bitcoin holds steady at support levels..."}
     ]
 
 @app.get("/trending")
