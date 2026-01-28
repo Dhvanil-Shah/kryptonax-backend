@@ -509,9 +509,10 @@
 #         except: continue
 #     return sorted(data, key=lambda x: abs(x['change']), reverse=True)
 
+
 from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel
 import motor.motor_asyncio
 from passlib.context import CryptContext
@@ -523,10 +524,9 @@ from dotenv import load_dotenv
 import yfinance as yf
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 import random
-import string
-import time # Added for caching
+import requests
+import time
 
-# 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
 
 # --- CONFIGURATION ---
@@ -535,15 +535,10 @@ ALGORITHM = "HS256"
 # ⚠️ Ensure this is your actual MongoDB URL
 MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0"
 
-# --- CACHE STORAGE (Makes Top Movers Fast) ---
-CACHE_STORE = {
-    "trending_us": {"data": [], "timestamp": 0},
-    "trending_in": {"data": [], "timestamp": 0},
-    "trending_all": {"data": [], "timestamp": 0}
-}
-CACHE_DURATION = 900 # 15 Minutes
+# --- CACHE (For Speed) ---
+CACHE_STORE = {"trending_us": {}, "trending_in": {}, "trending_all": {}}
+CACHE_DURATION = 900 
 
-# --- APP SETUP ---
 app = FastAPI()
 
 app.add_middleware(
@@ -554,38 +549,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DATABASE ---
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = client.kryptonax
 users_collection = db.users
 subscriptions_collection = db.subscriptions
 fav_collection = db.favorites 
-
-# --- EMAIL CONFIG ---
-conf = ConnectionConfig(
-    MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
-    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
-    MAIL_FROM = os.getenv("MAIL_FROM"),
-    MAIL_PORT = int(os.getenv("MAIL_PORT", 587)),
-    MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com"),
-    MAIL_STARTTLS = True,
-    MAIL_SSL_TLS = False,
-    USE_CREDENTIALS = True,
-    VALIDATE_CERTS = True
-)
-
-# --- MODELS ---
-class UserRegister(BaseModel):
-    username: str
-    password: str
-    first_name: str
-    last_name: str
-    mobile: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    user_name: str
 
 # --- AUTH UTILS ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -599,40 +567,15 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None: raise HTTPException(status_code=401)
-    except JWTError:
-        raise HTTPException(status_code=401)
-    
-    user = await users_collection.find_one({"username": username})
-    if user is None: raise HTTPException(status_code=401)
-    return user
+    except JWTError: raise HTTPException(status_code=401)
+    return {"username": username}
 
-# --- EMAIL LOGIC ---
-async def send_welcome_email(email_to: str, ticker: str):
-    html = f"""<h3>Kryptonax Alert</h3><p>Subscribed to: <b>{ticker}</b></p>"""
-    try:
-        message = MessageSchema(subject=f"Alert: {ticker}", recipients=[email_to], body=html, subtype="html")
-        fm = FastMail(conf)
-        await fm.send_message(message)
-    except Exception as e: print(f"Email Error: {e}")
-
-# ==========================================
-#               ENDPOINTS
-# ==========================================
+# --- ENDPOINTS ---
 
 @app.get("/")
 def home(): return {"message": "Kryptonax API Live"}
 
-# --- AUTH ---
-@app.post("/register")
-async def register(user: UserRegister):
-    existing = await users_collection.find_one({"username": user.username})
-    if existing: raise HTTPException(status_code=400, detail="Email already registered")
-    user_dict = user.dict()
-    user_dict["password"] = get_password_hash(user.password)
-    await users_collection.insert_one(user_dict)
-    return {"message": "User created"}
-
-@app.post("/token", response_model=Token)
+@app.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = await users_collection.find_one({"username": form_data.username})
     if not user or not verify_password(form_data.password, user["password"]):
@@ -640,46 +583,90 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     token = jwt.encode({"sub": user["username"]}, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer", "user_name": user.get("first_name", "User")}
 
-# --- FAVORITES & WATCHLIST ---
-@app.get("/favorites")
-async def get_favorites(current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
-    cursor = subscriptions_collection.find({"username": username})
-    subs = await cursor.to_list(length=100)
-    return [{"ticker": sub["ticker"]} for sub in subs]
+@app.post("/register")
+async def register(user: dict = Body(...)):
+    existing = await users_collection.find_one({"username": user['username']})
+    if existing: raise HTTPException(status_code=400, detail="Email exists")
+    user['password'] = get_password_hash(user['password'])
+    await users_collection.insert_one(user)
+    return {"message": "Created"}
 
-@app.post("/subscribe/{ticker}")
-async def subscribe(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
-    existing = await subscriptions_collection.find_one({"username": username, "ticker": ticker})
-    if existing: return {"message": "Already subscribed"}
-    await subscriptions_collection.insert_one({"username": username, "ticker": ticker})
-    await send_welcome_email(username, ticker)
-    return {"message": "Subscribed"}
+# --- RESTORED SEARCH FEATURE ---
+@app.get("/api/search/{query}")
+async def search_tickers(query: str):
+    try:
+        # REAL Yahoo Finance Search
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers).json()
+        return [{"symbol": i['symbol'], "name": i.get('shortname', i['symbol'])} for i in r.get('quotes', [])][:8]
+    except:
+        return []
 
-@app.delete("/subscribe/{ticker}")
-async def unsubscribe(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user["username"]
-    await subscriptions_collection.delete_one({"username": username, "ticker": ticker})
-    return {"message": "Unsubscribed"}
+# --- TOP MOVERS (With Cache) ---
+@app.get("/trending")
+async def trending(region: str = Query("all", enum=["all", "in", "us"])):
+    cache_key = f"trending_{region}"
+    now = time.time()
+    
+    # Check Cache
+    if cache_key in CACHE_STORE and "timestamp" in CACHE_STORE[cache_key]:
+        if now - CACHE_STORE[cache_key]["timestamp"] < CACHE_DURATION:
+            return CACHE_STORE[cache_key]["data"]
 
-# --- DATA & CHARTS ---
+    us_tickers = ["NVDA", "TSLA", "AAPL", "AMD", "MSFT", "GOOGL", "AMZN"]
+    in_tickers = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "TATAMOTORS.NS"]
+    target = us_tickers if region == "us" else in_tickers if region == "in" else us_tickers + in_tickers
+
+    results = []
+    for t in target:
+        try:
+            stock = yf.Ticker(t)
+            hist = stock.history(period="2d")
+            if len(hist) >= 2:
+                price = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                change = ((price - prev) / prev) * 100
+                results.append({"ticker": t, "price": round(price, 2), "change": round(change, 2)})
+        except: continue
+    
+    results.sort(key=lambda x: abs(x['change']), reverse=True)
+    CACHE_STORE[cache_key] = {"data": results[:6], "timestamp": now}
+    return results[:6]
+
+# --- CATEGORIZED NEWS ---
+@app.get("/news/general")
+async def general_news(category: str = Query("all")):
+    def item(title, sentiment, tag, desc, url):
+        return {"title": title, "sentiment": sentiment, "category_tag": tag, "description": desc, "publishedAt": datetime.now().isoformat(), "url": url}
+
+    # Mock Data with REAL Links
+    db = {
+        "gold": [item("Gold Hits Record High", "positive", "Commodities", "Global uncertainty drives demand.", "https://www.cnbc.com/gold")],
+        "stocks": [item("Tech Rally Continues", "positive", "Technology", "AI stocks lead the charge.", "https://www.bloomberg.com/markets")],
+        "mutual_funds": [item("Small Cap Funds Surge", "positive", "Mutual Funds", "High returns in small cap sector.", "https://www.moneycontrol.com/mutual-funds")],
+        "crypto": [item("Bitcoin Breaks Resistance", "positive", "Crypto", "BTC targets new highs.", "https://www.coindesk.com")],
+        "real_estate": [item("Housing Prices Stabilize", "neutral", "Real Estate", "Interest rates affect buying.", "https://www.reuters.com/business/real-estate")]
+    }
+    
+    if category == "all":
+        mixed = []
+        for k in db: mixed.extend(db[k])
+        random.shuffle(mixed)
+        return mixed
+    return db.get(category, [])
+
+# --- QUOTE & HISTORY (Restored) ---
 @app.get("/quote/{ticker}")
 async def get_quote(ticker: str):
     try:
         stock = yf.Ticker(ticker)
-        # Use history for reliability over fast_info
         data = stock.history(period="1d")
-        if data.empty: return {"symbol": ticker, "price": 0, "change": 0, "percent": 0}
-        
+        if data.empty: return {"price": 0, "change": 0}
         price = data['Close'].iloc[-1]
-        # Previous close logic
         prev = stock.info.get('previousClose', price)
-        if prev is None: prev = price 
-        
         return {"symbol": ticker, "price": round(price, 2), "change": round(price-prev, 2), "percent": round((price-prev)/prev*100, 2), "currency": "USD"}
-    except:
-        return {"symbol": ticker, "price": 0, "change": 0, "percent": 0}
+    except: return {"price": 0}
 
 @app.get("/history/{ticker}")
 async def history(ticker: str, period: str = "1mo"):
@@ -688,93 +675,24 @@ async def history(ticker: str, period: str = "1mo"):
         hist = stock.history(period=period)
         data = [{"date": d.strftime('%Y-%m-%d'), "price": round(r['Close'], 2)} for d, r in hist.iterrows()]
         return {"currency": "USD", "data": data}
-    except:
-        return {"currency": "USD", "data": []}
+    except: return {"currency": "USD", "data": []}
 
-@app.get("/api/search/{query}")
-async def search(query: str):
-    # Mock search for speed, or implement Yahoo search if needed
-    return [{"symbol": query.upper(), "name": "Stock/Crypto"}]
+@app.post("/subscribe/{ticker}")
+async def subscribe(ticker: str, current_user: dict = Depends(get_current_user)):
+    await subscriptions_collection.insert_one({"username": current_user["username"], "ticker": ticker})
+    return {"status": "ok"}
 
-# --- FEATURE 1: TOP MOVERS (CACHED) ---
-@app.get("/trending")
-async def trending(region: str = Query("all", enum=["all", "in", "us"])):
-    cache_key = f"trending_{region}"
-    now = time.time()
-    
-    # 1. Return Cached Data if valid
-    if now - CACHE_STORE[cache_key]["timestamp"] < CACHE_DURATION:
-        if CACHE_STORE[cache_key]["data"]:
-            return CACHE_STORE[cache_key]["data"]
+@app.delete("/subscribe/{ticker}")
+async def unsubscribe(ticker: str, current_user: dict = Depends(get_current_user)):
+    await subscriptions_collection.delete_one({"username": current_user["username"], "ticker": ticker})
+    return {"status": "ok"}
 
-    # 2. Fetch Fresh Data (Only if cache expired)
-    us_tickers = ["NVDA", "TSLA", "AAPL", "AMD", "MSFT", "GOOGL", "AMZN"]
-    in_tickers = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "TATAMOTORS.NS", "SBIN.NS"]
-    
-    target_tickers = []
-    if region == "us": target_tickers = us_tickers
-    elif region == "in": target_tickers = in_tickers
-    else: target_tickers = us_tickers + in_tickers
+@app.get("/favorites")
+async def get_favorites(current_user: dict = Depends(get_current_user)):
+    cursor = subscriptions_collection.find({"username": current_user["username"]})
+    subs = await cursor.to_list(length=100)
+    return [{"ticker": sub["ticker"]} for sub in subs]
 
-    results = []
-    for t in target_tickers:
-        try:
-            stock = yf.Ticker(t)
-            hist = stock.history(period="2d") # More reliable than fast_info
-            if len(hist) >= 2:
-                price = hist['Close'].iloc[-1]
-                prev = hist['Close'].iloc[-2]
-                change_pct = ((price - prev) / prev) * 100
-                results.append({"ticker": t, "price": round(price, 2), "change": round(change_pct, 2)})
-        except: continue
-            
-    results.sort(key=lambda x: abs(x['change']), reverse=True)
-    final_data = results[:6]
-    
-    # 3. Update Cache
-    CACHE_STORE[cache_key] = {"data": final_data, "timestamp": now}
-    
-    return final_data
-
-# --- FEATURE 2: CATEGORIZED NEWS ---
-@app.get("/news/general")
-async def general_news(category: str = Query("all")):
-    
-    def item(title, sentiment, tag, desc):
-        return {"title": title, "sentiment": sentiment, "category_tag": tag, "description": desc, "publishedAt": datetime.now().isoformat(), "url": "#"}
-
-    db = {
-        "gold": [
-            item("Gold Hits Record High", "positive", "Commodities", "Global uncertainty drives demand."),
-            item("Central Banks Buying Gold", "positive", "Economy", "Reserves increasing worldwide."),
-        ],
-        "stocks": [
-            item("Tech Rally Continues", "positive", "Technology", "AI stocks lead the charge."),
-            item("Market Correction Feared", "negative", "Markets", "Analysts warn of overvaluation."),
-        ],
-        "mutual_funds": [
-            item("Small Cap Funds Surge", "positive", "Mutual Funds", "High returns in small cap sector."),
-            item("SIP Inflows Record High", "positive", "Investment", "Retail investors confident."),
-        ],
-        "crypto": [
-            item("Bitcoin Breaks Resistance", "positive", "Crypto", "BTC targets new highs."),
-            item("Altseason Begins", "neutral", "Crypto", "Ethereum and Solana gain momentum."),
-        ],
-        "real_estate": [
-            item("Housing Prices Stabilize", "neutral", "Real Estate", "Interest rates affect buying."),
-            item("Commercial Spaces Boom", "positive", "Real Estate", "Office demand returns."),
-        ]
-    }
-
-    if category == "all":
-        mixed = []
-        for k in db: mixed.extend(db[k])
-        random.shuffle(mixed)
-        return mixed
-    
-    return db.get(category, [])
-
-# --- SERVER START ---
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
