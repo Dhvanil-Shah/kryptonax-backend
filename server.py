@@ -509,48 +509,41 @@
 #         except: continue
 #     return sorted(data, key=lambda x: abs(x['change']), reverse=True)
 
-
-
-
-from fastapi import FastAPI, HTTPException, Body, Depends, status, Query
+from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-import requests
-import pymongo
-from datetime import datetime, timedelta
-import yfinance as yf
-from ai import get_sentiment 
 from typing import List, Optional
+from pydantic import BaseModel
+import motor.motor_asyncio
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from pydantic import BaseModel
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import random
-import string
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+import yfinance as yf
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
+import random
+import string
+import time # Added for caching
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
 
 # --- CONFIGURATION ---
-API_KEY = "9f07c51e4e2145569ccba561e4e0d81a" 
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback_secret_key")
 ALGORITHM = "HS256"
-
-# ⚠️ SECURITY WARNING: Move this to your .env file in production!
+# ⚠️ Ensure this is your actual MongoDB URL
 MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0"
 
-# --- EMAIL CONFIG (Titan/GoDaddy) ---
-SMTP_SERVER = os.getenv("MAIL_SERVER", "smtp.titan.email")
-SMTP_PORT = int(os.getenv("MAIL_PORT", 587))
-SMTP_USERNAME = os.getenv("MAIL_USERNAME", "kryptonaxofficial@kryptonax.com")
-SMTP_PASSWORD = os.getenv("MAIL_PASSWORD", "(!#Kryptonaxofficial1!#)")
-SMTP_FROM = os.getenv("MAIL_FROM", "kryptonaxofficial@kryptonax.com")
+# --- CACHE STORAGE (Makes Top Movers Fast) ---
+CACHE_STORE = {
+    "trending_us": {"data": [], "timestamp": 0},
+    "trending_in": {"data": [], "timestamp": 0},
+    "trending_all": {"data": [], "timestamp": 0}
+}
+CACHE_DURATION = 900 # 15 Minutes
 
-# --- SETUP ---
+# --- APP SETUP ---
 app = FastAPI()
 
 app.add_middleware(
@@ -561,25 +554,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = pymongo.MongoClient(MONGO_URI)
-db = client["kryptonax"]
-users_collection = db["users"]
-subscriptions_collection = db["subscriptions"]
-news_collection = db["news_articles"]
-fav_collection = db["favorites"]
+# --- DATABASE ---
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+db = client.kryptonax
+users_collection = db.users
+subscriptions_collection = db.subscriptions
+fav_collection = db.favorites 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# --- EMAIL CONFIG ---
+conf = ConnectionConfig(
+    MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
+    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
+    MAIL_FROM = os.getenv("MAIL_FROM"),
+    MAIL_PORT = int(os.getenv("MAIL_PORT", 587)),
+    MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com"),
+    MAIL_STARTTLS = True,
+    MAIL_SSL_TLS = False,
+    USE_CREDENTIALS = True,
+    VALIDATE_CERTS = True
+)
 
 # --- MODELS ---
 class UserRegister(BaseModel):
-    username: str
-    password: str
-    first_name: str
-    last_name: str
-    mobile: str
-
-class UserCreate(BaseModel):
     username: str
     password: str
     first_name: str
@@ -591,388 +587,195 @@ class Token(BaseModel):
     token_type: str
     user_name: str
 
-class ForgotPasswordRequest(BaseModel):
-    username: str
+# --- AUTH UTILS ---
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-class ResetPasswordRequest(BaseModel):
-    username: str
-    otp: str
-    new_password: str
+def verify_password(plain, hashed): return pwd_context.verify(plain, hashed)
+def get_password_hash(password): return pwd_context.hash(password)
 
-# --- HELPERS ---
-def get_password_hash(password): 
-    return pwd_context.hash(password)
-
-def verify_password(plain, hashed): 
-    return pwd_context.verify(plain, hashed)
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    to_encode.update({"exp": datetime.utcnow() + timedelta(days=7)})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def generate_otp():
-    return ''.join(random.choices(string.digits, k=6))
-
-# --- CURRENT USER HELPER (Optional Auth) ---
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    if not token:
-        return {"username": "guest", "is_guest": True}
-    
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
-            return {"username": "guest", "is_guest": True}
+        if username is None: raise HTTPException(status_code=401)
     except JWTError:
-        return {"username": "guest", "is_guest": True}
+        raise HTTPException(status_code=401)
     
-    user = users_collection.find_one({"username": username})
-    if user is None:
-        return {"username": "guest", "is_guest": True}
+    user = await users_collection.find_one({"username": username})
+    if user is None: raise HTTPException(status_code=401)
     return user
 
-# --- EMAIL FUNCTIONS ---
-def send_email_otp(to_email, otp):
-    print(f"📧 Attempting to send OTP email to {to_email}...")
+# --- EMAIL LOGIC ---
+async def send_welcome_email(email_to: str, ticker: str):
+    html = f"""<h3>Kryptonax Alert</h3><p>Subscribed to: <b>{ticker}</b></p>"""
     try:
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_FROM
-        msg['To'] = to_email
-        msg['Subject'] = "Kryptonax Password Reset OTP"
-
-        body = f"""
-        <html>
-            <body style="font-family: Arial, sans-serif; color: #333;">
-                <h2 style="color: #2962ff;">Kryptonax Security</h2>
-                <p>You requested to reset your password.</p>
-                <p>Your One-Time Password (OTP) is:</p>
-                <h1 style="background-color: #f4f4f4; padding: 10px; display: inline-block; letter-spacing: 5px; color: #000;">{otp}</h1>
-                <p>This code is valid for 10 minutes.</p>
-            </body>
-        </html>
-        """
-        msg.attach(MIMEText(body, 'html'))
-
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-
-        print(f"✅ OTP email successfully sent to {to_email}")
-        return True
-    except Exception as e:
-        print(f"❌ EMAIL FAILED: {type(e).__name__}: {e}")
-        return False
-
-def send_welcome_email(email_to: str, ticker: str):
-    html = f"""
-    <h3>Kryptonax Alert</h3>
-    <p>You are now subscribed to updates for: <b>{ticker}</b></p>
-    <p>We will notify you on significant market movement via email.</p>
-    """
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_FROM
-        msg['To'] = email_to
-        msg['Subject'] = f"Alert Subscribed: {ticker}"
-        msg.attach(MIMEText(html, 'html'))
-        
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        
-        print(f"✅ Welcome email sent to {email_to} for {ticker}")
-        return True
-    except Exception as e:
-        print(f"❌ Welcome email error: {type(e).__name__}: {e}")
-        return False
-
-def send_sms_otp_simulated(mobile, otp):
-    print(f"📱 SMS SIMULATION TO: {mobile} | OTP: {otp}")
+        message = MessageSchema(subject=f"Alert: {ticker}", recipients=[email_to], body=html, subtype="html")
+        fm = FastMail(conf)
+        await fm.send_message(message)
+    except Exception as e: print(f"Email Error: {e}")
 
 # ==========================================
 #               ENDPOINTS
 # ==========================================
 
 @app.get("/")
-def home():
-    return {"message": "Kryptonax API Live"}
+def home(): return {"message": "Kryptonax API Live"}
 
-# --- AUTH ENDPOINTS ---
-
+# --- AUTH ---
 @app.post("/register")
-def register(user: UserRegister):
-    clean_username = user.username.lower().strip()
-    if users_collection.find_one({"username": clean_username}):
-        raise HTTPException(status_code=400, detail="Email already registered")
-    users_collection.insert_one({
-        "username": clean_username,
-        "password": get_password_hash(user.password),
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "mobile": user.mobile
-    })
-    return {"message": "User created successfully"}
+async def register(user: UserRegister):
+    existing = await users_collection.find_one({"username": user.username})
+    if existing: raise HTTPException(status_code=400, detail="Email already registered")
+    user_dict = user.dict()
+    user_dict["password"] = get_password_hash(user.password)
+    await users_collection.insert_one(user_dict)
+    return {"message": "User created"}
 
 @app.post("/token", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    clean_username = form_data.username.lower().strip()
-    user = users_collection.find_one({"username": clean_username})
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await users_collection.find_one({"username": form_data.username})
     if not user or not verify_password(form_data.password, user["password"]):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-    
-    token = create_access_token(data={"sub": user["username"]})
-    user_name = user.get("first_name", "User")
-    return {
-        "access_token": token, 
-        "token_type": "bearer", 
-        "user_name": user_name
-    }
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+    token = jwt.encode({"sub": user["username"]}, SECRET_KEY, algorithm=ALGORITHM)
+    return {"access_token": token, "token_type": "bearer", "user_name": user.get("first_name", "User")}
 
-# --- FORGOT PASSWORD FLOW ---
-
-@app.post("/forgot-password")
-def forgot_password(req: ForgotPasswordRequest):
-    clean_username = req.username.lower().strip()
-    user = users_collection.find_one({"username": clean_username})
-    
-    if not user:
-        return {"message": "If account exists, OTP sent."}
-    
-    otp = generate_otp()
-    expiry = datetime.utcnow() + timedelta(minutes=10)
-    
-    users_collection.update_one(
-        {"username": clean_username},
-        {"$set": {"otp_code": otp, "otp_expiry": expiry}}
-    )
-    
-    if "mobile" in user:
-        send_sms_otp_simulated(user["mobile"], otp)
-        
-    send_email_otp(clean_username, otp)
-        
-    return {"message": "OTP sent to registered email and mobile"}
-
-@app.post("/reset-password")
-def reset_password(req: ResetPasswordRequest):
-    clean_username = req.username.lower().strip()
-    user = users_collection.find_one({"username": clean_username})
-    
-    if not user: 
-        raise HTTPException(status_code=400, detail="User not found")
-    
-    received_otp = req.otp.strip()
-    stored_otp = user.get("otp_code")
-    
-    if not stored_otp:
-        raise HTTPException(status_code=400, detail="No OTP request found.")
-        
-    if stored_otp != received_otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-        
-    if "otp_expiry" in user and datetime.utcnow() > user["otp_expiry"]:
-        raise HTTPException(status_code=400, detail="OTP Expired")
-        
-    new_hashed = get_password_hash(req.new_password)
-    users_collection.update_one(
-        {"username": clean_username},
-        {"$set": {"password": new_hashed}, "$unset": {"otp_code": "", "otp_expiry": ""}}
-    )
-    
-    return {"message": "Password reset successful! Please login."}
-
-# --- SUBSCRIBE ENDPOINTS ---
-
-@app.post("/subscribe/{ticker}", status_code=status.HTTP_201_CREATED)
-def subscribe_to_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user.get("username", "guest")
-    existing = subscriptions_collection.find_one({"username": username, "ticker": ticker})
-    if existing: return {"message": f"Already subscribed to {ticker}"}
-    subscriptions_collection.insert_one({"username": username, "ticker": ticker})
-    send_welcome_email(username, ticker)
-    return {"message": f"Successfully subscribed to {ticker}"}
-
-@app.delete("/subscribe/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
-def unsubscribe_from_ticker(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user.get("username", "guest")
-    result = subscriptions_collection.delete_one({"username": username, "ticker": ticker})
-    if result.deleted_count == 0: raise HTTPException(status_code=404, detail="Subscription not found")
-    return
-
+# --- FAVORITES & WATCHLIST ---
 @app.get("/favorites")
-def get_favorites(current_user: dict = Depends(get_current_user)):
-    username = current_user.get("username", "guest")
-    subs = list(subscriptions_collection.find({"username": username}))
+async def get_favorites(current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    cursor = subscriptions_collection.find({"username": username})
+    subs = await cursor.to_list(length=100)
     return [{"ticker": sub["ticker"]} for sub in subs]
 
-@app.post("/favorites/{ticker}")
-def add_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user.get("username", "guest")
-    ticker = ticker.upper()
-    existing = fav_collection.find_one({"username": username, "ticker": ticker})
-    if existing: return {"message": "Already in watchlist"}
-    fav_collection.insert_one({"username": username, "ticker": ticker, "added_at": datetime.utcnow()})
-    return {"message": f"Added {ticker} to watchlist"}
+@app.post("/subscribe/{ticker}")
+async def subscribe(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    existing = await subscriptions_collection.find_one({"username": username, "ticker": ticker})
+    if existing: return {"message": "Already subscribed"}
+    await subscriptions_collection.insert_one({"username": username, "ticker": ticker})
+    await send_welcome_email(username, ticker)
+    return {"message": "Subscribed"}
 
-@app.delete("/favorites/{ticker}")
-def remove_favorite(ticker: str, current_user: dict = Depends(get_current_user)):
-    username = current_user.get("username", "guest")
-    ticker = ticker.upper()
-    result = fav_collection.delete_one({"username": username, "ticker": ticker})
-    if result.deleted_count == 0: raise HTTPException(status_code=404, detail="Ticker not found")
-    return {"message": f"Removed {ticker}"}
+@app.delete("/subscribe/{ticker}")
+async def unsubscribe(ticker: str, current_user: dict = Depends(get_current_user)):
+    username = current_user["username"]
+    await subscriptions_collection.delete_one({"username": username, "ticker": ticker})
+    return {"message": "Unsubscribed"}
 
-# --- DATA ENDPOINTS ---
-
-def fetch_from_api_and_save(ticker):
-    search_query = ticker.replace(".NS", "").replace(".BO", "")
-    try:
-        url = f"https://newsapi.org/v2/everything?q={search_query}&apiKey={API_KEY}&language=en&sortBy=publishedAt&pageSize=10"
-        data = requests.get(url).json(); articles = data.get("articles", [])
-        if articles:
-            news_collection.delete_many({"ticker": ticker})
-            for a in articles: a["ticker"] = ticker; a["fetched_at"] = datetime.now(); a["sentiment"] = get_sentiment(a.get("title", "")[:200])
-            news_collection.insert_many(articles)
-        return articles
-    except: return []
-
-@app.get("/news/{ticker}")
-def get_news(ticker: str, period: str = "30d"): 
-    ticker = ticker.upper()
-    if news_collection.count_documents({"ticker": ticker}) < 5: fetch_from_api_and_save(ticker)
-    return list(news_collection.find({"ticker": ticker}, {"_id": 0}).sort("publishedAt", -1))
-
+# --- DATA & CHARTS ---
 @app.get("/quote/{ticker}")
-def get_current_price(ticker: str):
+async def get_quote(ticker: str):
     try:
-        info = yf.Ticker(ticker.upper()).fast_info
-        return {"symbol": ticker.upper(), "price": round(info.last_price, 2), "change": round(info.last_price - info.previous_close, 2), "percent": round(((info.last_price - info.previous_close) / info.previous_close) * 100, 2), "currency": info.currency}
-    except: return {"price": 0, "change": 0, "percent": 0, "currency": "USD"}
-
-@app.post("/api/quotes")
-def get_batch_quotes(tickers: List[str] = Body(...)):
-    results = {}
-    if not tickers: return results
-    try:
-        stocks = yf.Tickers(" ".join(tickers))
-        for t in tickers:
-            try:
-                i = stocks.tickers[t].fast_info
-                results[t] = {"price": round(i.last_price, 2), "change": round(i.last_price - i.previous_close, 2), "percent": round(((i.last_price - i.previous_close) / i.previous_close)*100, 2), "color": "#00e676" if i.last_price >= i.previous_close else "#ff1744"}
-            except: results[t] = None
-    except: pass
-    return results
+        stock = yf.Ticker(ticker)
+        # Use history for reliability over fast_info
+        data = stock.history(period="1d")
+        if data.empty: return {"symbol": ticker, "price": 0, "change": 0, "percent": 0}
+        
+        price = data['Close'].iloc[-1]
+        # Previous close logic
+        prev = stock.info.get('previousClose', price)
+        if prev is None: prev = price 
+        
+        return {"symbol": ticker, "price": round(price, 2), "change": round(price-prev, 2), "percent": round((price-prev)/prev*100, 2), "currency": "USD"}
+    except:
+        return {"symbol": ticker, "price": 0, "change": 0, "percent": 0}
 
 @app.get("/history/{ticker}")
-def get_stock_history(ticker: str, period: str = "1mo"):
+async def history(ticker: str, period: str = "1mo"):
     try:
-        stock = yf.Ticker(ticker.upper())
-        hist = stock.history(period=period, interval="1m" if period == "1d" else "1d")
-        data = [{"date": date.strftime('%H:%M') if period=="1d" else date.strftime('%Y-%m-%d'), "price": row['Close']} for date, row in hist.iterrows()]
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+        data = [{"date": d.strftime('%Y-%m-%d'), "price": round(r['Close'], 2)} for d, r in hist.iterrows()]
         return {"currency": "USD", "data": data}
-    except: return {"currency": "USD", "data": []}
+    except:
+        return {"currency": "USD", "data": []}
 
 @app.get("/api/search/{query}")
-def search_tickers(query: str):
-    try:
-        r = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={query}", headers={'User-Agent': 'Mozilla/5.0'}).json()
-        return [{"symbol": i['symbol'], "name": i.get('shortname', i['symbol'])} for i in r.get('quotes', [])][:8]
-    except: return []
+async def search(query: str):
+    # Mock search for speed, or implement Yahoo search if needed
+    return [{"symbol": query.upper(), "name": "Stock/Crypto"}]
 
-# --- NEW FEATURES: MOVERS & CATEGORIZED NEWS ---
-
+# --- FEATURE 1: TOP MOVERS (CACHED) ---
 @app.get("/trending")
-def get_trending(region: str = Query("all", enum=["all", "in", "us"])):
-    # 1. Define lists of tickers for each region
+async def trending(region: str = Query("all", enum=["all", "in", "us"])):
+    cache_key = f"trending_{region}"
+    now = time.time()
+    
+    # 1. Return Cached Data if valid
+    if now - CACHE_STORE[cache_key]["timestamp"] < CACHE_DURATION:
+        if CACHE_STORE[cache_key]["data"]:
+            return CACHE_STORE[cache_key]["data"]
+
+    # 2. Fetch Fresh Data (Only if cache expired)
     us_tickers = ["NVDA", "TSLA", "AAPL", "AMD", "MSFT", "GOOGL", "AMZN"]
-    in_tickers = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "TATAMOTORS.NS", "SBIN.NS", "ICICIBANK.NS"]
+    in_tickers = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "TATAMOTORS.NS", "SBIN.NS"]
     
     target_tickers = []
-    if region == "us":
-        target_tickers = us_tickers
-    elif region == "in":
-        target_tickers = in_tickers
-    else:
-        # Mix them up for "All"
-        target_tickers = list(set(us_tickers + in_tickers)) # Ensure unique mix
+    if region == "us": target_tickers = us_tickers
+    elif region == "in": target_tickers = in_tickers
+    else: target_tickers = us_tickers + in_tickers
 
-    # 2. Fetch live data
     results = []
-    try:
-        tickers_str = " ".join(target_tickers)
-        stocks = yf.Tickers(tickers_str)
-        
-        for t in target_tickers:
-            try:
-                info = stocks.tickers[t].fast_info
-                price = info.last_price
-                prev = info.previous_close
-                if prev: # avoid division by zero
-                    change_pct = ((price - prev) / prev) * 100
-                    results.append({
-                        "ticker": t,
-                        "price": round(price, 2),
-                        "change": round(change_pct, 2)
-                    })
-            except:
-                continue
-    except Exception as e:
-        print(f"Trending Error: {e}")
+    for t in target_tickers:
+        try:
+            stock = yf.Ticker(t)
+            hist = stock.history(period="2d") # More reliable than fast_info
+            if len(hist) >= 2:
+                price = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                change_pct = ((price - prev) / prev) * 100
+                results.append({"ticker": t, "price": round(price, 2), "change": round(change_pct, 2)})
+        except: continue
             
-    # Sort by absolute volatility (biggest movers first)
     results.sort(key=lambda x: abs(x['change']), reverse=True)
-    return results[:6] # Return top 6
-
-@app.get("/news/general")
-def get_general_news(category: str = Query("all", enum=["all", "gold", "stocks", "mutual_funds", "crypto", "real_estate"])):
+    final_data = results[:6]
     
-    def news_item(title, sentiment, desc, tag):
-        return {
-            "title": title, 
-            "sentiment": sentiment, 
-            "publishedAt": datetime.now().isoformat(), 
-            "url": "#", 
-            "description": desc,
-            "category_tag": tag
-        }
+    # 3. Update Cache
+    CACHE_STORE[cache_key] = {"data": final_data, "timestamp": now}
+    
+    return final_data
 
-    # In a real app, query NewsAPI with keywords. For now, we mock categories to ensure feature works immediately.
-    news_db = {
+# --- FEATURE 2: CATEGORIZED NEWS ---
+@app.get("/news/general")
+async def general_news(category: str = Query("all")):
+    
+    def item(title, sentiment, tag, desc):
+        return {"title": title, "sentiment": sentiment, "category_tag": tag, "description": desc, "publishedAt": datetime.now().isoformat(), "url": "#"}
+
+    db = {
         "gold": [
-            news_item("Gold Prices Surge as Dollar Weakens", "positive", "Spot gold hits new highs amid global uncertainty.", "Commodities"),
-            news_item("Central Banks Buying Gold at Record Pace", "positive", "Nations diversify reserves away from fiat currencies.", "Global Economy"),
-            news_item("India's Gold Imports Fall", "negative", "High import duties curb demand in key markets.", "Commodities"),
+            item("Gold Hits Record High", "positive", "Commodities", "Global uncertainty drives demand."),
+            item("Central Banks Buying Gold", "positive", "Economy", "Reserves increasing worldwide."),
         ],
         "stocks": [
-            news_item("Tech Sector Leads Market Rally", "positive", "AI stocks push indices to record highs.", "Technology"),
-            news_item("Banking Stocks Face Margin Pressure", "negative", "High interest rates squeeze lending margins.", "Banking"),
-            news_item("Auto Sector Q3 Earnings Review", "neutral", "Mixed results from major auto manufacturers.", "Automobile"),
+            item("Tech Rally Continues", "positive", "Technology", "AI stocks lead the charge."),
+            item("Market Correction Feared", "negative", "Markets", "Analysts warn of overvaluation."),
         ],
         "mutual_funds": [
-            news_item("Small Cap Funds Deliver 40% Returns", "positive", "High risk funds outperform benchmarks significantly.", "Small Cap"),
-            news_item("SIP Inflows Hit All-Time High", "positive", "Retail participation in mutual funds continues to grow.", "Equity Funds"),
-            news_item("Debt Funds See Outflows", "negative", "Investors shift to equity for higher returns.", "Debt Funds"),
+            item("Small Cap Funds Surge", "positive", "Mutual Funds", "High returns in small cap sector."),
+            item("SIP Inflows Record High", "positive", "Investment", "Retail investors confident."),
         ],
         "crypto": [
-            news_item("Bitcoin Breaks Resistance Levels", "positive", "Crypto market sentiment turns bullish.", "Crypto"),
-            news_item("SEC Issues Warning on Altcoins", "negative", "Regulatory scrutiny tightens on smaller tokens.", "Regulation"),
-            news_item("Ethereum Upgrade Successful", "positive", "Network fees expected to drop significantly.", "Blockchain"),
+            item("Bitcoin Breaks Resistance", "positive", "Crypto", "BTC targets new highs."),
+            item("Altseason Begins", "neutral", "Crypto", "Ethereum and Solana gain momentum."),
         ],
         "real_estate": [
-            news_item("Housing Market Cools Down", "negative", "Rising mortgage rates deter new homebuyers.", "Residential"),
-            news_item("Commercial Real Estate Boom in Tier 2 Cities", "positive", "Office space demand rises outside metros.", "Commercial"),
-            news_item("Luxury Apartments Sales Spike", "positive", "High net worth individuals drive premium demand.", "Luxury"),
+            item("Housing Prices Stabilize", "neutral", "Real Estate", "Interest rates affect buying."),
+            item("Commercial Spaces Boom", "positive", "Real Estate", "Office demand returns."),
         ]
     }
 
     if category == "all":
         mixed = []
-        for cat in news_db:
-            mixed.extend(news_db[cat][:1]) # Mix top story from each
+        for k in db: mixed.extend(db[k])
         random.shuffle(mixed)
         return mixed
     
-    return news_db.get(category, [])
+    return db.get(category, [])
+
+# --- SERVER START ---
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
