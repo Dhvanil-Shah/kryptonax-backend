@@ -1302,17 +1302,23 @@ def get_general_news(category: str = "all", regions: str = "all", states: str = 
             if regions and regions != "all":
                 region_list = regions.split(",")
                 if "india" in region_list:
-                    region_keywords += " India Mumbai Delhi Bangalore"
+                    region_keywords += " (India OR Mumbai OR Delhi OR Bangalore OR NSE OR BSE OR Sensex OR Nifty OR Rupee OR RBI)"
                 if "us" in region_list:
-                    region_keywords += " USA America NYSE NASDAQ"
+                    region_keywords += " (USA OR America OR NYSE OR NASDAQ OR 'Wall Street' OR 'Federal Reserve')"
                 if "uk" in region_list:
-                    region_keywords += " UK Britain London LSE"
+                    region_keywords += " (UK OR Britain OR London OR LSE OR FTSE)"
                 if "japan" in region_list:
-                    region_keywords += " Japan Tokyo Nikkei"
+                    region_keywords += " (Japan OR Tokyo OR Nikkei)"
                 if "china" in region_list:
-                    region_keywords += " China Beijing Shanghai"
+                    region_keywords += " (China OR Beijing OR Shanghai OR 'Hong Kong')"
+                if "canada" in region_list:
+                    region_keywords += " (Canada OR Toronto OR TSX)"
+                if "germany" in region_list:
+                    region_keywords += " (Germany OR Berlin OR Frankfurt OR DAX)"
+                if "france" in region_list:
+                    region_keywords += " (France OR Paris OR 'CAC 40')"
             
-            q = f"stock market OR economy OR crypto OR gold OR mutual fund OR real estate{region_keywords}"
+            q = f"(stock market OR economy OR crypto OR gold OR 'mutual fund' OR 'real estate'){region_keywords}"
             url = f"https://newsapi.org/v2/everything?q={q}&apiKey={API_KEY}&language=en&sortBy=publishedAt&pageSize=100"
             articles = requests.get(url).json().get("articles", [])
             
@@ -1344,16 +1350,22 @@ def get_general_news(category: str = "all", regions: str = "all", states: str = 
 
                     # Detect region from content
                     detected_regions = []
-                    if any(x in txt for x in ["india", "mumbai", "delhi", "bangalore", "nse", "bse", "sensex", "nifty"]):
+                    if any(x in txt for x in ["india", "mumbai", "delhi", "bangalore", "chennai", "kolkata", "hyderabad", "pune", "ahmedabad", "surat", "nse", "bse", "sensex", "nifty", "rupee", "rbi", "sebi", "indian", "bharat", "bengaluru", "gurgaon", "noida"]):
                         detected_regions.append("india")
-                    if any(x in txt for x in ["usa", "america", "us ", "nyse", "nasdaq", "dow jones", "wall street"]):
+                    if any(x in txt for x in ["usa", "america", "american", "us ", " us.", "nyse", "nasdaq", "dow jones", "wall street", "federal reserve", "fed ", "s&p 500", "california", "new york", "texas", "florida"]):
                         detected_regions.append("us")
-                    if any(x in txt for x in ["uk", "britain", "london", "lse", "ftse"]):
+                    if any(x in txt for x in ["uk", "britain", "british", "london", "lse", "ftse", "england", "scotland", "wales"]):
                         detected_regions.append("uk")
-                    if any(x in txt for x in ["japan", "tokyo", "nikkei"]):
+                    if any(x in txt for x in ["japan", "japanese", "tokyo", "nikkei", "osaka", "yen", "boj"]):
                         detected_regions.append("japan")
-                    if any(x in txt for x in ["china", "beijing", "shanghai", "hong kong"]):
+                    if any(x in txt for x in ["china", "chinese", "beijing", "shanghai", "hong kong", "yuan", "pboc", "shenzhen"]):
                         detected_regions.append("china")
+                    if any(x in txt for x in ["canada", "canadian", "toronto", "vancouver", "tsx", "ottawa"]):
+                        detected_regions.append("canada")
+                    if any(x in txt for x in ["germany", "german", "berlin", "munich", "frankfurt", "dax", "euro", "bundesbank"]):
+                        detected_regions.append("germany")
+                    if any(x in txt for x in ["france", "french", "paris", "cac 40", "lyon", "marseille"]):
+                        detected_regions.append("france")
                     
                     a["regions"] = detected_regions if detected_regions else ["all"]
 
@@ -1394,8 +1406,25 @@ def get_general_news(category: str = "all", regions: str = "all", states: str = 
         region_list = [r.strip().lower() for r in regions.split(",")]
         filtered_news = [
             a for a in filtered_news 
-            if any(r in a.get("regions", ["all"]) for r in region_list) or "all" in a.get("regions", ["all"])
+            if (
+                # Article has detected regions that match requested regions
+                any(r in a.get("regions", []) for r in region_list) 
+                # OR article is marked as "all" (global/generic)
+                or "all" in a.get("regions", [])
+            )
         ]
+        
+        # If specific regions requested and we have articles, prioritize region-specific over "all"
+        if filtered_news and len(region_list) > 0 and "all" not in region_list:
+            # Separate region-specific from generic
+            region_specific = [a for a in filtered_news if "all" not in a.get("regions", [])]
+            generic = [a for a in filtered_news if "all" in a.get("regions", [])]
+            
+            # Prefer region-specific, but include some generic if not enough content
+            if len(region_specific) >= 10:
+                filtered_news = region_specific[:30]  # Limit to 30 region-specific
+            else:
+                filtered_news = region_specific + generic[:10]  # Mix both
     
     # Parse states filter if provided (for future enhancement)
     states_filter = {}
