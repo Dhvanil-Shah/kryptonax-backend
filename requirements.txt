@@ -11,4 +11,4 @@ passlib
 bcrypt==3.2.2
 python-dotenv
 fastapi-mail
-openai
+google-generativeai

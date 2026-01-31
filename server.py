@@ -520,8 +520,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 from ai import get_sentiment 
 from typing import List
-import openai
-from openai import OpenAI
+import google.generativeai as genai
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -541,9 +540,28 @@ API_KEY = "9f07c51e4e2145569ccba561e4e0d81a"
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 
-# --- AI / LLM CONFIG ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# --- AI / LLM CONFIG (Google Gemini) ---
+SYSTEM_PROMPT = """You are an intelligent financial AI assistant for Kryptonax platform.
+You have expertise in:
+- Company news analysis and market sentiment
+- Board member profiles and their expertise
+- Company history and capability assessment
+- Stock market trends and technical analysis
+- Cryptocurrency and commodities markets
+
+Provide accurate, concise, and professional financial insights.
+When discussing companies, mention relevant sectors, market cap, recent news highlights, and sentiment.
+Always cite data-driven insights when available."""
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+gemini_model = None
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel(
+        model_name=GEMINI_MODEL,
+        system_instruction=SYSTEM_PROMPT
+    )
 
 # ⚠️ SECURITY WARNING: Move this to your .env file in production!
 MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0"
@@ -1121,36 +1139,22 @@ def chat_with_bot(request: ChatRequest):
     """
     AI Chatbot endpoint for discussing company news, history, board members, capabilities.
     Accepts user message and optional ticker for context.
-    Uses OpenAI API to generate intelligent financial insights.
+    Uses Google Gemini API to generate intelligent financial insights.
     """
-    if not openai_client:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured. Set OPENAI_API_KEY environment variable.")
+    if not gemini_model:
+        raise HTTPException(status_code=500, detail="Gemini API key not configured. Set GEMINI_API_KEY environment variable.")
     
     try:
-        # Build conversation history for context
-        messages = [
-            {
-                "role": "system",
-                "content": """You are an intelligent financial AI assistant for Kryptonax platform. 
-                You have expertise in:
-                - Company news analysis and market sentiment
-                - Board member profiles and their expertise
-                - Company history and capability assessment
-                - Stock market trends and technical analysis
-                - Cryptocurrency and commodities markets
-                
-                Provide accurate, concise, and professional financial insights.
-                When discussing companies, mention relevant sectors, market cap, recent news highlights, and sentiment.
-                Always cite data-driven insights when available."""
-            }
-        ]
+        # Build conversation history for context (Gemini format)
+        messages = []
         
         # Add conversation history if provided
         if request.history:
             for msg in request.history[-10:]:  # Keep last 10 messages for context window
+                role = "user" if msg.role == "user" else "model"
                 messages.append({
-                    "role": msg.role,
-                    "content": msg.message
+                    "role": role,
+                    "parts": [msg.message]
                 })
         
         # Fetch relevant context if ticker is provided
@@ -1190,19 +1194,19 @@ def chat_with_bot(request: ChatRequest):
         # Add current user message to conversation
         messages.append({
             "role": "user",
-            "content": user_message
+            "parts": [user_message]
         })
         
-        # Call OpenAI API
-        response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500,
-            timeout=30
+        # Call Gemini API
+        response = gemini_model.generate_content(
+            messages,
+            generation_config={
+                "temperature": 0.7,
+                "max_output_tokens": 500
+            }
         )
         
-        bot_response = response.choices[0].message.content
+        bot_response = response.text if hasattr(response, "text") else ""
         
         # Build updated history
         updated_history = list(request.history) if request.history else []
