@@ -1283,14 +1283,19 @@ def get_general_news(category: str = "all", regions: str = "all", states: str = 
     """
     import json
     
+    # Create cache key based on regions
+    cache_key = f"GENERAL_TRENDING_{regions.replace(',', '_')}" if regions != "all" else "GENERAL_TRENDING"
+    
     # Try cached
-    cached = list(news_collection.find({"ticker": "GENERAL_TRENDING"}, {"_id": 0}).sort("publishedAt", -1))
+    cached = list(news_collection.find({"ticker": cache_key}, {"_id": 0}).sort("publishedAt", -1))
     need_refresh = False
     if not cached:
         need_refresh = True
     else:
         try:
-            if (datetime.now() - cached[0]["fetched_at"]).seconds > 21600:
+            # Shorter cache for region-specific queries (1 hour vs 6 hours)
+            cache_duration = 3600 if regions != "all" else 21600
+            if (datetime.now() - cached[0]["fetched_at"]).seconds > cache_duration:
                 need_refresh = True
         except:
             need_refresh = True
@@ -1324,10 +1329,10 @@ def get_general_news(category: str = "all", regions: str = "all", states: str = 
             
             if articles:
                 # annotate and cache
-                news_collection.delete_many({"ticker": "GENERAL_TRENDING"})
+                news_collection.delete_many({"ticker": cache_key})
                 enriched = []
                 for a in articles:
-                    a["ticker"] = "GENERAL_TRENDING"
+                    a["ticker"] = cache_key
                     a["fetched_at"] = datetime.utcnow()
                     a["sentiment"] = get_sentiment(a.get("title", "")[:200])
                     a_cat = None
