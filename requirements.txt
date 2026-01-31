@@ -12,3 +12,4 @@ bcrypt==3.2.2
 python-dotenv
 fastapi-mail
 google-generativeai
+beautifulsoup4

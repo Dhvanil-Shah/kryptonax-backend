@@ -1510,6 +1510,177 @@ def get_avatar_url(name: str) -> str:
         initials = name_parts[0][:2] if name_parts else "U"
     return f"https://ui-avatars.com/api/?name={initials.upper()}&bold=true&background=4FACFE&color=ffffff&size=240&font-size=0.40"
 
+
+# ==========================================
+#     REPORT FETCHING HELPERS
+# ==========================================
+
+def get_sec_cik(ticker: str) -> str:
+    """Get SEC CIK number for a ticker."""
+    try:
+        url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={ticker}&type=&dateb=&owner=exclude&count=1&search_text="
+        headers = {'User-Agent': 'Kryptonax Research kryptonax@example.com'}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            import re
+            match = re.search(r'CIK=(\d{10})', response.text)
+            if match:
+                return match.group(1)
+    except:
+        pass
+    return None
+
+def fetch_sec_reports(ticker: str, year: int, quarter: int) -> dict:
+    """Fetch reports from SEC EDGAR for US companies."""
+    try:
+        cik = get_sec_cik(ticker)
+        if not cik:
+            return None
+            
+        headers = {'User-Agent': 'Kryptonax Research kryptonax@example.com'}
+        
+        # Determine filing type based on quarter
+        if quarter == 4:
+            form_type = "10-K"  # Annual report
+        else:
+            form_type = "10-Q"  # Quarterly report
+            
+        # SEC EDGAR API endpoint
+        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            filings = data.get('filings', {}).get('recent', {})
+            
+            # Find matching filing
+            for i, form in enumerate(filings.get('form', [])):
+                if form == form_type:
+                    accession = filings['accessionNumber'][i].replace('-', '')
+                    filing_date = filings['filingDate'][i]
+                    primary_doc = filings['primaryDocument'][i]
+                    
+                    # Construct document URL
+                    doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession}/{primary_doc}"
+                    return {
+                        "url": doc_url,
+                        "date": filing_date,
+                        "source": "SEC EDGAR",
+                        "available": True
+                    }
+    except Exception as e:
+        print(f"SEC fetch error: {e}")
+    return None
+
+def fetch_yahoo_investor_relations(ticker: str) -> str:
+    """Get investor relations page from Yahoo Finance."""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        website = info.get('website', '')
+        
+        if website:
+            # Common investor relations URL patterns
+            ir_patterns = [
+                f"{website}/investor-relations",
+                f"{website}/investors",
+                f"{website}/en/investor-relations",
+                f"{website}/ir",
+            ]
+            
+            for ir_url in ir_patterns:
+                try:
+                    response = requests.head(ir_url, timeout=5, allow_redirects=True)
+                    if response.status_code == 200:
+                        return ir_url
+                except:
+                    continue
+    except:
+        pass
+    return None
+
+def fetch_company_reports_from_web(ticker: str, report_type: str) -> str:
+    """Scrape company website for report PDFs."""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        website = info.get('website', '')
+        
+        if not website:
+            return None
+            
+        # Try investor relations page
+        ir_url = fetch_yahoo_investor_relations(ticker)
+        if ir_url:
+            response = requests.get(ir_url, timeout=10)
+            if response.status_code == 200:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for PDF links
+                keywords = {
+                    'annual': ['annual report', '10-k', 'annual general meeting'],
+                    'quarterly': ['quarterly report', '10-q', 'q1', 'q2', 'q3', 'q4'],
+                    'proxy': ['proxy statement', 'def 14a', 'agm'],
+                    'esg': ['sustainability', 'esg', 'corporate responsibility']
+                }
+                
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    text = link.get_text().lower()
+                    
+                    if href.endswith('.pdf'):
+                        for keyword in keywords.get(report_type, []):
+                            if keyword in text:
+                                if not href.startswith('http'):
+                                    href = website + href
+                                return href
+    except Exception as e:
+        print(f"Web scraping error: {e}")
+    return None
+
+def get_report_with_fallback(ticker: str, report_type: str, year: int, quarter: int) -> dict:
+    """Multi-source report fetching with cascading fallback."""
+    
+    # Attempt 1: SEC EDGAR (US companies only)
+    if report_type in ['results', 'quarterly', 'annual']:
+        sec_report = fetch_sec_reports(ticker, year, quarter)
+        if sec_report:
+            return sec_report
+    
+    # Attempt 2: Yahoo Finance investor relations link
+    ir_link = fetch_yahoo_investor_relations(ticker)
+    if ir_link:
+        return {
+            "url": ir_link,
+            "date": f"{year}-Q{quarter}",
+            "source": "Investor Relations",
+            "available": True
+        }
+    
+    # Attempt 3: Company website scraping
+    web_report = fetch_company_reports_from_web(ticker, report_type)
+    if web_report:
+        return {
+            "url": web_report,
+            "date": f"{year}-Q{quarter}",
+            "source": "Company Website",
+            "available": True
+        }
+    
+    # Fallback: Report not available
+    return {
+        "url": None,
+        "date": f"{year}-Q{quarter}",
+        "source": "Not Available",
+        "available": False
+    }
+
+
+# ==========================================
+#     COMPANY DETAILS ENDPOINTS
+# ==========================================
+
 @app.get("/company-history/{ticker}")
 def get_company_history(ticker: str):
     """Fetch company history, founding info, and key milestones."""
@@ -1610,50 +1781,63 @@ def get_board_members(ticker: str):
 
 @app.get("/compendium/{ticker}")
 def get_compendium(ticker: str):
-    """Fetch financial reports and compendium data organized by type and quarter."""
+    """Fetch financial reports with multi-source fallback (SEC, Yahoo, Web Scraping)."""
     try:
-        # Structure for different report types with quarterly data
+        current_year = 2025
+        
+        # Fetch reports for each quarter using multi-source approach
+        quarters_data = {}
+        for q in [4, 3, 2, 1]:
+            quarter_key = f"Q{q}"
+            report_data = get_report_with_fallback(ticker, 'quarterly', current_year, q)
+            
+            # Quarter dates
+            quarter_months = {4: "Jan", 3: "Oct", 2: "Jul", 1: "Apr"}
+            
+            quarters_data[quarter_key] = {
+                "url": report_data["url"] if report_data["available"] else None,
+                "date": f"{quarter_months[q]} {current_year - (1 if q <= 3 else 0)}",
+                "source": report_data["source"],
+                "available": report_data["available"]
+            }
+        
+        # Fetch AGM report (annual)
+        agm_report = get_report_with_fallback(ticker, 'annual', current_year, 4)
+        
+        # Structure for different report types
         compendium = {
             "ticker": ticker,
             "reports": {
                 "credit_summary": {
                     "name": "Credit Summary",
                     "description": "Credit analysis and debt assessment",
-                    "quarters": {
-                        "Q4": {"url": f"/reports/{ticker}/credit_summary_q4.pdf", "date": "Jan 2024"},
-                        "Q3": {"url": f"/reports/{ticker}/credit_summary_q3.pdf", "date": "Oct 2023"},
-                        "Q2": {"url": f"/reports/{ticker}/credit_summary_q2.pdf", "date": "Jul 2023"},
-                        "Q1": {"url": f"/reports/{ticker}/credit_summary_q1.pdf", "date": "Apr 2023"}
-                    }
+                    "quarters": quarters_data
                 },
                 "equity_note": {
                     "name": "Equity Note",
                     "description": "Equity valuation and stock analysis",
-                    "quarters": {
-                        "Q4": {"url": f"/reports/{ticker}/equity_note_q4.pdf", "date": "Jan 2024"},
-                        "Q3": {"url": f"/reports/{ticker}/equity_note_q3.pdf", "date": "Oct 2023"},
-                        "Q2": {"url": f"/reports/{ticker}/equity_note_q2.pdf", "date": "Jul 2023"},
-                        "Q1": {"url": f"/reports/{ticker}/equity_note_q1.pdf", "date": "Apr 2023"}
-                    }
+                    "quarters": quarters_data
                 },
                 "esg_compendium": {
                     "name": "ESG Compendium",
                     "description": "Environmental, Social & Governance insights",
-                    "quarters": {
-                        "Q4": {"url": f"/reports/{ticker}/esg_q4.pdf", "date": "Jan 2024"},
-                        "Q3": {"url": f"/reports/{ticker}/esg_q3.pdf", "date": "Oct 2023"},
-                        "Q2": {"url": f"/reports/{ticker}/esg_q2.pdf", "date": "Jul 2023"},
-                        "Q1": {"url": f"/reports/{ticker}/esg_q1.pdf", "date": "Apr 2023"}
-                    }
+                    "quarters": quarters_data
                 },
                 "results_compendium": {
                     "name": "Results Compendium",
                     "description": "Financial results and performance summary",
+                    "quarters": quarters_data
+                },
+                "agm_report": {
+                    "name": "Annual General Meeting",
+                    "description": "Annual general meeting report and proxy statement",
                     "quarters": {
-                        "Q4": {"url": f"/reports/{ticker}/results_q4.pdf", "date": "Jan 2024"},
-                        "Q3": {"url": f"/reports/{ticker}/results_q3.pdf", "date": "Oct 2023"},
-                        "Q2": {"url": f"/reports/{ticker}/results_q2.pdf", "date": "Jul 2023"},
-                        "Q1": {"url": f"/reports/{ticker}/results_q1.pdf", "date": "Apr 2023"}
+                        "Annual": {
+                            "url": agm_report["url"] if agm_report["available"] else None,
+                            "date": f"FY {current_year}",
+                            "source": agm_report["source"],
+                            "available": agm_report["available"]
+                        }
                     }
                 }
             }
