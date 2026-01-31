@@ -1274,8 +1274,15 @@ def fetch_from_api_and_save(ticker):
     except: return []
 
 @app.get("/news/general")
-def get_general_news(category: str = "all"):
-    """Return general trending news. Optional `category` filters: all, gold, stocks, mutual_fund, crypto, real_estate."""
+def get_general_news(category: str = "all", regions: str = "all", states: str = ""):
+    """
+    Return general trending news with region/state filtering.
+    - category: all, gold, stocks, mutual_fund, crypto, real_estate
+    - regions: comma-separated list (e.g., "india,us") or "all"
+    - states: JSON string mapping regions to states
+    """
+    import json
+    
     # Try cached
     cached = list(news_collection.find({"ticker": "GENERAL_TRENDING"}, {"_id": 0}).sort("publishedAt", -1))
     need_refresh = False
@@ -1290,9 +1297,25 @@ def get_general_news(category: str = "all"):
 
     if need_refresh:
         try:
-            q = "stock market OR economy OR crypto OR gold OR mutual fund OR real estate"
-            url = f"https://newsapi.org/v2/everything?q={q}&apiKey={API_KEY}&language=en&sortBy=publishedAt&pageSize=60"
+            # Adjust search query based on regions
+            region_keywords = ""
+            if regions and regions != "all":
+                region_list = regions.split(",")
+                if "india" in region_list:
+                    region_keywords += " India Mumbai Delhi Bangalore"
+                if "us" in region_list:
+                    region_keywords += " USA America NYSE NASDAQ"
+                if "uk" in region_list:
+                    region_keywords += " UK Britain London LSE"
+                if "japan" in region_list:
+                    region_keywords += " Japan Tokyo Nikkei"
+                if "china" in region_list:
+                    region_keywords += " China Beijing Shanghai"
+            
+            q = f"stock market OR economy OR crypto OR gold OR mutual fund OR real estate{region_keywords}"
+            url = f"https://newsapi.org/v2/everything?q={q}&apiKey={API_KEY}&language=en&sortBy=publishedAt&pageSize=100"
             articles = requests.get(url).json().get("articles", [])
+            
             if articles:
                 # annotate and cache
                 news_collection.delete_many({"ticker": "GENERAL_TRENDING"})
@@ -1303,6 +1326,8 @@ def get_general_news(category: str = "all"):
                     a["sentiment"] = get_sentiment(a.get("title", "")[:200])
                     a_cat = None
                     txt = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
+                    
+                    # Categorize news
                     if "gold" in txt:
                         a_cat = "gold"
                     elif any(x in txt for x in ["crypto", "bitcoin", "ethereum", "btc", "eth", "coin"]):
@@ -1316,6 +1341,21 @@ def get_general_news(category: str = "all"):
                     else:
                         a_cat = "all"
                     a["category"] = a_cat
+
+                    # Detect region from content
+                    detected_regions = []
+                    if any(x in txt for x in ["india", "mumbai", "delhi", "bangalore", "nse", "bse", "sensex", "nifty"]):
+                        detected_regions.append("india")
+                    if any(x in txt for x in ["usa", "america", "us ", "nyse", "nasdaq", "dow jones", "wall street"]):
+                        detected_regions.append("us")
+                    if any(x in txt for x in ["uk", "britain", "london", "lse", "ftse"]):
+                        detected_regions.append("uk")
+                    if any(x in txt for x in ["japan", "tokyo", "nikkei"]):
+                        detected_regions.append("japan")
+                    if any(x in txt for x in ["china", "beijing", "shanghai", "hong kong"]):
+                        detected_regions.append("china")
+                    
+                    a["regions"] = detected_regions if detected_regions else ["all"]
 
                     # simple entity inference
                     entity = ""
@@ -1341,14 +1381,34 @@ def get_general_news(category: str = "all"):
         except Exception as e:
             print("Error fetching general news:", e)
 
-    # If category requested, filter cached
+    # Filter by category
+    filtered_news = cached
     if category and category != "all":
         try:
-            return [a for a in cached if a.get("category") == category]
+            filtered_news = [a for a in cached if a.get("category") == category]
         except:
-            return cached
-
-    return cached
+            filtered_news = cached
+    
+    # Filter by regions
+    if regions and regions != "all":
+        region_list = [r.strip().lower() for r in regions.split(",")]
+        filtered_news = [
+            a for a in filtered_news 
+            if any(r in a.get("regions", ["all"]) for r in region_list) or "all" in a.get("regions", ["all"])
+        ]
+    
+    # Parse states filter if provided (for future enhancement)
+    states_filter = {}
+    if states:
+        try:
+            states_filter = json.loads(states)
+        except:
+            pass
+    
+    # TODO: Add state-level filtering when geographic data is available
+    # For now, we return region-filtered results
+    
+    return filtered_news
 
 @app.get("/news/{ticker}")
 def get_news(ticker: str, period: str = "30d"): 
@@ -1399,22 +1459,72 @@ def search_tickers(query: str):
     except: return []
 
 @app.get("/trending")
-def get_global_trending(region: str = "all"):
-    """Return trending movers. Optional `region` param: all, india, us"""
+def get_global_trending(regions: str = "all", states: str = ""):
+    """
+    Return trending movers. 
+    - regions: comma-separated list (e.g., "india,us") or "all"
+    - states: JSON string mapping regions to states (e.g., '{"india":["Maharashtra","Delhi"]}')
+    """
+    import json
+    
+    # Define region-specific ticker pools
     pools = {
-        "all": ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "BTC-USD", "GC=F"],
-        "india": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS"],
-        "us": ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "META", "NFLX"]
+        "all": ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "BTC-USD", "GC=F", "GOLD", "SILVER"],
+        "india": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "WIPRO.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS"],
+        "us": ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "META", "NFLX", "JPM", "V", "WMT"],
+        "uk": ["BP.L", "HSBA.L", "SHEL.L", "AZN.L", "ULVR.L", "GSK.L", "DGE.L", "RIO.L", "BARC.L"],
+        "japan": ["7203.T", "6758.T", "9984.T", "6861.T", "6902.T", "8306.T", "9432.T"],  # Toyota, Sony, SoftBank, etc.
+        "china": ["BABA", "BIDU", "JD", "PDD", "NIO", "XPEV", "LI"]  # ADRs for Chinese companies
     }
-    tickers = pools.get(region.lower(), pools["all"])
+    
+    # Parse states filter if provided
+    states_filter = {}
+    if states:
+        try:
+            states_filter = json.loads(states)
+        except:
+            pass
+    
+    # Determine which tickers to fetch
+    selected_tickers = []
+    if regions == "all" or not regions:
+        selected_tickers = pools["all"]
+    else:
+        region_list = [r.strip().lower() for r in regions.split(",")]
+        for region in region_list:
+            if region in pools:
+                selected_tickers.extend(pools[region])
+    
+    # Remove duplicates
+    selected_tickers = list(set(selected_tickers))
+    
+    # Fetch data for all selected tickers
     data = []
-    for t in tickers:
+    for t in selected_tickers:
         try:
             i = yf.Ticker(t).fast_info
             change = ((i.last_price - i.previous_close)/i.previous_close)*100
-            data.append({"ticker": t, "change": round(change, 2), "price": round(i.last_price, 2)})
+            
+            # Determine region for this ticker
+            ticker_region = "all"
+            for region, region_tickers in pools.items():
+                if t in region_tickers and region != "all":
+                    ticker_region = region
+                    break
+            
+            data.append({
+                "ticker": t, 
+                "change": round(change, 2), 
+                "price": round(i.last_price, 2),
+                "region": ticker_region
+            })
         except Exception:
             continue
+    
+    # Note: State filtering would require more specific data sources
+    # For now, we return region-filtered results
+    # TODO: Integrate state-specific market indices or company headquarters data
+    
     return sorted(data, key=lambda x: abs(x['change']), reverse=True)
 
 # ==========================================
