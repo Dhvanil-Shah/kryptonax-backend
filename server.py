@@ -1421,6 +1421,95 @@ def get_global_trending(region: str = "all"):
 #       COMPANY DETAILS ENDPOINTS
 # ==========================================
 
+# Helper function to fetch Wikipedia photos
+def get_wikipedia_photo(name: str) -> str:
+    """
+    Fetch professional photo from Wikipedia for a person.
+    Falls back to initials avatar if not found.
+    """
+    try:
+        # Clean the name for Wikipedia search
+        search_name = name.strip().replace(' ', '_')
+        
+        # Try Wikipedia API
+        wiki_url = "https://en.wikipedia.org/w/api.php"
+        params = {
+            'action': 'query',
+            'titles': search_name,
+            'prop': 'pageimages|extracts',
+            'format': 'json',
+            'pithumbsize': '500',
+            'redirects': 1
+        }
+        
+        response = requests.get(wiki_url, params=params, timeout=5)
+        data = response.json()
+        
+        # Extract image from Wikipedia response
+        pages = data.get('query', {}).get('pages', {})
+        for page_id, page_data in pages.items():
+            if 'thumbnail' in page_data:
+                photo_url = page_data['thumbnail']['source']
+                # Verify the URL is accessible
+                if photo_url and photo_url.startswith('http'):
+                    return photo_url
+        
+        # If no Wikipedia image found, try Wikidata
+        return get_wikidata_photo(name)
+        
+    except Exception as e:
+        # Silently fail and return initials avatar
+        return None
+
+def get_wikidata_photo(name: str) -> str:
+    """Fetch professional photo from Wikidata as secondary source."""
+    try:
+        search_name = name.strip()
+        
+        # Wikidata API search
+        wikidata_url = "https://www.wikidata.org/w/api.php"
+        params = {
+            'action': 'wbsearchentities',
+            'search': search_name,
+            'language': 'en',
+            'format': 'json'
+        }
+        
+        response = requests.get(wikidata_url, params=params, timeout=5)
+        data = response.json()
+        entities = data.get('search', [])
+        
+        if entities:
+            # Get the first entity ID
+            entity_id = entities[0]['id']
+            
+            # Fetch entity details to get image
+            entity_url = f"https://www.wikidata.org/wiki/Special:EntityData/{entity_id}.json"
+            entity_response = requests.get(entity_url, timeout=5)
+            entity_data = entity_response.json()
+            
+            claims = entity_data.get('entities', {}).get(entity_id, {}).get('claims', {})
+            
+            # Look for image property (P18)
+            if 'P18' in claims:
+                image_title = claims['P18'][0]['mainsnak']['datavalue']['value']
+                # Convert Wikimedia Commons image title to URL
+                image_url = f"https://commons.wikimedia.org/wiki/Special:FilePath/{image_title}?width=500"
+                return image_url
+    except Exception:
+        pass
+    
+    return None
+
+def get_avatar_url(name: str) -> str:
+    """Generate professional initials-based avatar URL as fallback."""
+    name_parts = name.strip().split()
+    if len(name_parts) >= 2:
+        initials = name_parts[0][0] + name_parts[-1][0]
+    else:
+        initials = name_parts[0][:2] if name_parts else "U"
+    return f"https://ui-avatars.com/api/?name={initials.upper()}&bold=true&background=4FACFE&color=ffffff&size=240&font-size=0.40"
+
 @app.get("/company-history/{ticker}")
 def get_company_history(ticker: str):
     """Fetch company history, founding info, and key milestones."""
@@ -1448,20 +1537,10 @@ def get_company_history(ticker: str):
 
 @app.get("/board-members/{ticker}")
 def get_board_members(ticker: str):
-    """Fetch board members and leadership information."""
+    """Fetch board members and leadership information with Wikipedia photos."""
     try:
         t = yf.Ticker(ticker)
         info = t.info
-        
-        # Helper function to generate professional initials-based avatar
-        def get_avatar_url(name):
-            """Generate professional initials-based avatar URL"""
-            name_parts = name.strip().split()
-            if len(name_parts) >= 2:
-                initials = name_parts[0][0] + name_parts[-1][0]
-            else:
-                initials = name_parts[0][:2] if name_parts else "U"
-            return f"https://ui-avatars.com/api/?name={initials.upper()}&bold=true&background=4FACFE&color=ffffff&size=240&font-size=0.40"
         
         # Extract officers data from Yahoo Finance
         officers = []
@@ -1473,13 +1552,17 @@ def get_board_members(ticker: str):
                 title = officer.get("title", "N/A").lower()
                 name = officer.get("name", "N/A")
                 
+                # Try to get Wikipedia photo, fallback to initials avatar
+                wiki_photo = get_wikipedia_photo(name)
+                photo_url = wiki_photo if wiki_photo else get_avatar_url(name)
+                
                 # Identify owner and chairperson
                 if i == 0 and not owner and ("founder" in title or "chairman" in title or "ceo" in title):
                     owner = {
                         "name": name,
                         "title": officer.get("title", "Founder & CEO"),
                         "pay": officer.get("totalPay", 0),
-                        "photo_url": get_avatar_url(name),
+                        "photo_url": photo_url,
                         "role": "Founder & CEO"
                     }
                 elif not chairperson and ("chairman" in title or "board" in title):
@@ -1487,7 +1570,7 @@ def get_board_members(ticker: str):
                         "name": name,
                         "title": officer.get("title", "Chairperson"),
                         "pay": officer.get("totalPay", 0),
-                        "photo_url": get_avatar_url(name),
+                        "photo_url": photo_url,
                         "role": "Chairperson"
                     }
                 else:
@@ -1495,7 +1578,7 @@ def get_board_members(ticker: str):
                         "name": name,
                         "title": officer.get("title", "N/A"),
                         "pay": officer.get("totalPay", 0),
-                        "photo_url": get_avatar_url(name)
+                        "photo_url": photo_url
                     })
         
         # If no officers found, create defaults
