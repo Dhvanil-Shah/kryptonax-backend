@@ -7,6 +7,7 @@
 # import yfinance as yf
 # from ai import get_sentiment 
 # from typing import List
+# import google.generativeai as genai
 # from passlib.context import CryptContext
 # from jose import JWTError, jwt
 # from pydantic import BaseModel
@@ -25,6 +26,69 @@
 # API_KEY = "9f07c51e4e2145569ccba561e4e0d81a" 
 # SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 # ALGORITHM = "HS256"
+
+# # --- AI / LLM CONFIG (Google Gemini) ---
+# SYSTEM_PROMPT = """You are an intelligent financial AI assistant for Kryptonax platform.
+# You have expertise in:
+# - Company news analysis and market sentiment
+# - Board member profiles and their expertise
+# - Company history and capability assessment
+# - Stock market trends and technical analysis
+# - Cryptocurrency and commodities markets
+
+# Provide accurate, concise, and professional financial insights.
+# When discussing companies, mention relevant sectors, market cap, recent news highlights, and sentiment.
+# Always cite data-driven insights when available."""
+
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
+# gemini_model = None
+
+# def resolve_gemini_model_name(preferred: str) -> str:
+#     preferred = (preferred or "").strip()
+#     candidates = []
+#     if preferred:
+#         candidates.append(preferred)
+#         if preferred.startswith("models/"):
+#             candidates.append(preferred.replace("models/", "", 1))
+#         else:
+#             candidates.append(f"models/{preferred}")
+
+#     try:
+#         models = list(genai.list_models())
+#         available = {m.name for m in models}
+
+#         for name in candidates:
+#             if name in available:
+#                 return name
+
+#         priority = [
+#             "models/gemini-1.5-flash",
+#             "models/gemini-1.5-pro",
+#             "models/gemini-1.5-flash-latest",
+#             "models/gemini-1.5-pro-latest",
+#             "models/gemini-pro",
+#         ]
+#         for name in priority:
+#             if name in available:
+#                 return name
+
+#         for m in models:
+#             if "generateContent" in getattr(m, "supported_generation_methods", []):
+#                 return m.name
+#     except Exception as e:
+#         print(f"⚠️ Gemini model discovery failed: {e}")
+
+#     return preferred or "gemini-1.5-flash"
+
+# if GEMINI_API_KEY:
+#     genai.configure(api_key=GEMINI_API_KEY)
+#     resolved_model = resolve_gemini_model_name(GEMINI_MODEL)
+#     print(f"✅ Gemini model resolved: {resolved_model}")
+#     gemini_model = genai.GenerativeModel(
+#         model_name=resolved_model,
+#         system_instruction=SYSTEM_PROMPT
+#     )
 
 # # ⚠️ SECURITY WARNING: Move this to your .env file in production!
 # MONGO_URI = "mongodb+srv://admin:(!#Krypton1!#)@cluster0.snwbrpt.mongodb.net/?appName=Cluster0"
@@ -84,6 +148,20 @@
 #     username: str
 #     otp: str
 #     new_password: str
+
+# class ChatMessage(BaseModel):
+#     role: str  # "user" or "bot"
+#     message: str
+
+# class ChatRequest(BaseModel):
+#     user_message: str
+#     ticker: str = None  # Optional company ticker for context
+#     history: List[ChatMessage] = []  # Previous messages for context
+
+# class ChatResponse(BaseModel):
+#     response: str
+#     role: str = "bot"
+#     history: List[ChatMessage] = []
 
 # # --- HELPERS ---
 # def get_password_hash(password): 
@@ -436,18 +514,80 @@
 #     except: return []
 
 # @app.get("/news/general")
-# def get_general_news():
+# def get_general_news(category: str = "all"):
+#     """Return general trending news. Optional `category` filters: all, gold, stocks, mutual_fund, crypto, real_estate."""
+#     # Try cached
 #     cached = list(news_collection.find({"ticker": "GENERAL_TRENDING"}, {"_id": 0}).sort("publishedAt", -1))
-#     if not cached or (datetime.now() - cached[0]["fetched_at"]).seconds > 21600:
+#     need_refresh = False
+#     if not cached:
+#         need_refresh = True
+#     else:
 #         try:
-#             url = f"https://newsapi.org/v2/everything?q=stock market OR economy OR crypto&apiKey={API_KEY}&language=en&sortBy=publishedAt&pageSize=40"
+#             if (datetime.now() - cached[0]["fetched_at"]).seconds > 21600:
+#                 need_refresh = True
+#         except:
+#             need_refresh = True
+
+#     if need_refresh:
+#         try:
+#             q = "stock market OR economy OR crypto OR gold OR mutual fund OR real estate"
+#             url = f"https://newsapi.org/v2/everything?q={q}&apiKey={API_KEY}&language=en&sortBy=publishedAt&pageSize=60"
 #             articles = requests.get(url).json().get("articles", [])
 #             if articles:
+#                 # annotate and cache
 #                 news_collection.delete_many({"ticker": "GENERAL_TRENDING"})
-#                 for a in articles: a["ticker"] = "GENERAL_TRENDING"; a["fetched_at"] = datetime.now(); a["sentiment"] = get_sentiment(a.get("title", "")[:200])
-#                 news_collection.insert_many(articles)
-#                 return articles
-#         except: pass
+#                 enriched = []
+#                 for a in articles:
+#                     a["ticker"] = "GENERAL_TRENDING"
+#                     a["fetched_at"] = datetime.utcnow()
+#                     a["sentiment"] = get_sentiment(a.get("title", "")[:200])
+#                     a_cat = None
+#                     txt = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
+#                     if "gold" in txt:
+#                         a_cat = "gold"
+#                     elif any(x in txt for x in ["crypto", "bitcoin", "ethereum", "btc", "eth", "coin"]):
+#                         a_cat = "crypto"
+#                     elif any(x in txt for x in ["mutual fund", "mutual funds", "sip", "nav", "aum", "fund house", "mf "]):
+#                         a_cat = "mutual_fund"
+#                     elif any(x in txt for x in ["real estate", "property", "mortgage", "housing", "realty", "reit"]):
+#                         a_cat = "real_estate"
+#                     elif any(x in txt for x in ["stock", "shares", "ipo", "earnings", "revenue", "acquisition", "merger"]):
+#                         a_cat = "stocks"
+#                     else:
+#                         a_cat = "all"
+#                     a["category"] = a_cat
+
+#                     # simple entity inference
+#                     entity = ""
+#                     if a_cat == "stocks":
+#                         if any(x in txt for x in ["bank", "hdfc", "icici", "sbi", "banking"]): entity = "Sector: Banking"
+#                         elif any(x in txt for x in ["oil", "energy", "exxon", "bp", "chevron"]): entity = "Sector: Energy"
+#                         elif any(x in txt for x in ["tech", "software", "microsoft", "apple", "google", "tcs", "infosys"]): entity = "Sector: Technology"
+#                         elif any(x in txt for x in ["auto", "tesla", "ford", "gm"]): entity = "Sector: Automotive"
+#                     if a_cat == "mutual_fund":
+#                         if any(x in txt for x in ["equity", "large cap", "large-cap"]): entity = "Fund Type: Equity / Large Cap"
+#                         elif any(x in txt for x in ["debt", "bond"]): entity = "Fund Type: Debt"
+#                         elif "hybrid" in txt: entity = "Fund Type: Hybrid"
+#                         elif "sip" in txt: entity = "Fund Feature: SIP"
+#                     a["entity_info"] = entity
+
+#                     enriched.append(a)
+
+#                 if enriched:
+#                     # insert enriched with fetched_at as datetime
+#                     for doc in enriched:
+#                         news_collection.insert_one(doc)
+#                     cached = enriched
+#         except Exception as e:
+#             print("Error fetching general news:", e)
+
+#     # If category requested, filter cached
+#     if category and category != "all":
+#         try:
+#             return [a for a in cached if a.get("category") == category]
+#         except:
+#             return cached
+
 #     return cached
 
 # @app.get("/news/{ticker}")
@@ -499,17 +639,124 @@
 #     except: return []
 
 # @app.get("/trending")
-# def get_global_trending():
+# def get_global_trending(region: str = "all"):
+#     """Return trending movers. Optional `region` param: all, india, us"""
+#     pools = {
+#         "all": ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "BTC-USD", "GC=F"],
+#         "india": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS"],
+#         "us": ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "META", "NFLX"]
+#     }
+#     tickers = pools.get(region.lower(), pools["all"])
 #     data = []
-#     for t in ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "AMD", "BTC-USD", "GC=F"]:
+#     for t in tickers:
 #         try:
 #             i = yf.Ticker(t).fast_info
 #             change = ((i.last_price - i.previous_close)/i.previous_close)*100
 #             data.append({"ticker": t, "change": round(change, 2), "price": round(i.last_price, 2)})
-#         except: continue
+#         except Exception:
+#             continue
 #     return sorted(data, key=lambda x: abs(x['change']), reverse=True)
 
+# # ==========================================
+# #          AI CHATBOT ENDPOINT
+# # ==========================================
 
+# @app.post("/chat", response_model=ChatResponse)
+# def chat_with_bot(request: ChatRequest):
+#     """
+#     AI Chatbot endpoint for discussing company news, history, board members, capabilities.
+#     Accepts user message and optional ticker for context.
+#     Uses Google Gemini API to generate intelligent financial insights.
+#     """
+#     if not gemini_model:
+#         raise HTTPException(status_code=500, detail="Gemini API key not configured. Set GEMINI_API_KEY environment variable.")
+    
+#     try:
+#         # Build conversation history for context (Gemini format)
+#         messages = []
+        
+#         # Add conversation history if provided
+#         if request.history:
+#             for msg in request.history[-10:]:  # Keep last 10 messages for context window
+#                 role = "user" if msg.role == "user" else "model"
+#                 messages.append({
+#                     "role": role,
+#                     "parts": [msg.message]
+#                 })
+        
+#         # Fetch relevant context if ticker is provided
+#         context = ""
+#         if request.ticker:
+#             try:
+#                 ticker_obj = yf.Ticker(request.ticker)
+#                 info = ticker_obj.info
+#                 company_name = info.get("longName", request.ticker)
+#                 sector = info.get("sector", "N/A")
+#                 market_cap = info.get("marketCap", "N/A")
+#                 pe_ratio = info.get("trailingPE", "N/A")
+                
+#                 # Fetch recent news for this ticker
+#                 recent_news = news_collection.find_one({"ticker": request.ticker}) or {}
+#                 recent_articles = recent_news.get("articles", [])[:3]
+                
+#                 context = f"\nContext: Company={company_name}, Sector={sector}, MarketCap={market_cap}, P/E={pe_ratio}\n"
+#                 if recent_articles:
+#                     context += "Recent News:\n"
+#                     for article in recent_articles:
+#                         context += f"- {article.get('title', 'No title')}\n"
+                
+#                 # Add sentiment analysis if available
+#                 sentiment_data = news_collection.find_one({"ticker": request.ticker, "sentiment": {"$exists": True}})
+#                 if sentiment_data:
+#                     sentiment = sentiment_data.get("sentiment", {})
+#                     context += f"Market Sentiment: Positive={sentiment.get('positive', 0):.1%}, Negative={sentiment.get('negative', 0):.1%}\n"
+#             except Exception as e:
+#                 context = f"\n(Note: Unable to fetch detailed context for {request.ticker}: {str(e)})\n"
+        
+#         # Prepare user message with context
+#         user_message = request.user_message
+#         if context:
+#             user_message = user_message + context
+        
+#         # Add current user message to conversation
+#         messages.append({
+#             "role": "user",
+#             "parts": [user_message]
+#         })
+        
+#         # Call Gemini API
+#         response = gemini_model.generate_content(
+#             messages,
+#             generation_config={
+#                 "temperature": 0.7,
+#                 "max_output_tokens": 500
+#             }
+#         )
+        
+#         bot_response = response.text if hasattr(response, "text") else ""
+        
+#         # Build updated history
+#         updated_history = list(request.history) if request.history else []
+#         updated_history.append(ChatMessage(role="user", message=request.user_message))
+#         updated_history.append(ChatMessage(role="bot", message=bot_response))
+        
+#         return ChatResponse(
+#             response=bot_response,
+#             role="bot",
+#             history=updated_history
+#         )
+    
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"❌ Chat error: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"Chatbot error: {str(e)}")
+
+
+# if __name__ == "__main__":
+#     # Use this guarded runner on Windows to avoid multiprocessing/reload recursion
+#     import uvicorn
+#     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
 
 from fastapi import FastAPI, HTTPException, Body, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -1171,6 +1418,128 @@ def get_global_trending(region: str = "all"):
     return sorted(data, key=lambda x: abs(x['change']), reverse=True)
 
 # ==========================================
+#       COMPANY DETAILS ENDPOINTS
+# ==========================================
+
+@app.get("/company-history/{ticker}")
+def get_company_history(ticker: str):
+    """Fetch company history, founding info, and key milestones."""
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info
+        
+        return {
+            "ticker": ticker,
+            "company_name": info.get("longName", ticker),
+            "founded": info.get("founded", "N/A"),
+            "sector": info.get("sector", "N/A"),
+            "industry": info.get("industry", "N/A"),
+            "country": info.get("country", "N/A"),
+            "website": info.get("website", "N/A"),
+            "description": info.get("longBusinessSummary", "No description available"),
+            "headquarters": info.get("city", "") + ", " + info.get("state", ""),
+            "employees": info.get("fullTimeEmployees", "N/A"),
+            "market_cap": info.get("marketCap", "N/A"),
+            "beta": info.get("beta", "N/A")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Company history not found for {ticker}: {str(e)}")
+
+
+@app.get("/board-members/{ticker}")
+def get_board_members(ticker: str):
+    """Fetch board members and leadership information."""
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info
+        
+        # Extract officers data from Yahoo Finance
+        officers = []
+        if "companyOfficers" in info and info["companyOfficers"]:
+            for officer in info["companyOfficers"][:10]:  # Limit to top 10
+                officers.append({
+                    "name": officer.get("name", "N/A"),
+                    "title": officer.get("title", "N/A"),
+                    "pay": officer.get("totalPay", 0),
+                    "photo_url": f"https://ui-avatars.com/api/?name={officer.get('name', 'N/A')}&background=4FACFE&color=fff"
+                })
+        
+        # If no officers found, return CEO info
+        if not officers and "companyOfficers" not in info:
+            ceo_name = info.get("companyOfficers", [{}])[0].get("name", "Not Available") if info.get("companyOfficers") else "Not Available"
+            officers.append({
+                "name": ceo_name,
+                "title": "Chief Executive Officer",
+                "pay": 0,
+                "photo_url": f"https://ui-avatars.com/api/?name={ceo_name}&background=4FACFE&color=fff"
+            })
+        
+        return {
+            "ticker": ticker,
+            "company_name": info.get("longName", ticker),
+            "board_members": officers,
+            "board_size": len(officers)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Board members not found for {ticker}: {str(e)}")
+
+
+@app.get("/compendium/{ticker}")
+def get_compendium(ticker: str):
+    """Fetch financial reports and compendium data organized by type and quarter."""
+    try:
+        # Structure for different report types with quarterly data
+        compendium = {
+            "ticker": ticker,
+            "reports": {
+                "credit_summary": {
+                    "name": "Credit Summary",
+                    "description": "Credit analysis and debt assessment",
+                    "quarters": {
+                        "Q4": {"url": f"/reports/{ticker}/credit_summary_q4.pdf", "date": "Jan 2024"},
+                        "Q3": {"url": f"/reports/{ticker}/credit_summary_q3.pdf", "date": "Oct 2023"},
+                        "Q2": {"url": f"/reports/{ticker}/credit_summary_q2.pdf", "date": "Jul 2023"},
+                        "Q1": {"url": f"/reports/{ticker}/credit_summary_q1.pdf", "date": "Apr 2023"}
+                    }
+                },
+                "equity_note": {
+                    "name": "Equity Note",
+                    "description": "Equity valuation and stock analysis",
+                    "quarters": {
+                        "Q4": {"url": f"/reports/{ticker}/equity_note_q4.pdf", "date": "Jan 2024"},
+                        "Q3": {"url": f"/reports/{ticker}/equity_note_q3.pdf", "date": "Oct 2023"},
+                        "Q2": {"url": f"/reports/{ticker}/equity_note_q2.pdf", "date": "Jul 2023"},
+                        "Q1": {"url": f"/reports/{ticker}/equity_note_q1.pdf", "date": "Apr 2023"}
+                    }
+                },
+                "esg_compendium": {
+                    "name": "ESG Compendium",
+                    "description": "Environmental, Social & Governance insights",
+                    "quarters": {
+                        "Q4": {"url": f"/reports/{ticker}/esg_q4.pdf", "date": "Jan 2024"},
+                        "Q3": {"url": f"/reports/{ticker}/esg_q3.pdf", "date": "Oct 2023"},
+                        "Q2": {"url": f"/reports/{ticker}/esg_q2.pdf", "date": "Jul 2023"},
+                        "Q1": {"url": f"/reports/{ticker}/esg_q1.pdf", "date": "Apr 2023"}
+                    }
+                },
+                "results_compendium": {
+                    "name": "Results Compendium",
+                    "description": "Financial results and performance summary",
+                    "quarters": {
+                        "Q4": {"url": f"/reports/{ticker}/results_q4.pdf", "date": "Jan 2024"},
+                        "Q3": {"url": f"/reports/{ticker}/results_q3.pdf", "date": "Oct 2023"},
+                        "Q2": {"url": f"/reports/{ticker}/results_q2.pdf", "date": "Jul 2023"},
+                        "Q1": {"url": f"/reports/{ticker}/results_q1.pdf", "date": "Apr 2023"}
+                    }
+                }
+            }
+        }
+        return compendium
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching compendium: {str(e)}")
+
+
+# ==========================================
 #          AI CHATBOT ENDPOINT
 # ==========================================
 
@@ -1270,4 +1639,6 @@ if __name__ == "__main__":
     # Use this guarded runner on Windows to avoid multiprocessing/reload recursion
     import uvicorn
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
+
+
 
