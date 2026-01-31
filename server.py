@@ -554,12 +554,52 @@ When discussing companies, mention relevant sectors, market cap, recent news hig
 Always cite data-driven insights when available."""
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 gemini_model = None
+
+def resolve_gemini_model_name(preferred: str) -> str:
+    preferred = (preferred or "").strip()
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+        if preferred.startswith("models/"):
+            candidates.append(preferred.replace("models/", "", 1))
+        else:
+            candidates.append(f"models/{preferred}")
+
+    try:
+        models = list(genai.list_models())
+        available = {m.name for m in models}
+
+        for name in candidates:
+            if name in available:
+                return name
+
+        priority = [
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-pro",
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-1.5-pro-latest",
+            "models/gemini-pro",
+        ]
+        for name in priority:
+            if name in available:
+                return name
+
+        for m in models:
+            if "generateContent" in getattr(m, "supported_generation_methods", []):
+                return m.name
+    except Exception as e:
+        print(f"⚠️ Gemini model discovery failed: {e}")
+
+    return preferred or "gemini-1.5-flash"
+
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    resolved_model = resolve_gemini_model_name(GEMINI_MODEL)
+    print(f"✅ Gemini model resolved: {resolved_model}")
     gemini_model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
+        model_name=resolved_model,
         system_instruction=SYSTEM_PROMPT
     )
 
