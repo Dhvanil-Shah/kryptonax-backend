@@ -1453,6 +1453,16 @@ def get_board_members(ticker: str):
         t = yf.Ticker(ticker)
         info = t.info
         
+        # Helper function to generate professional initials-based avatar
+        def get_avatar_url(name):
+            """Generate professional initials-based avatar URL"""
+            name_parts = name.strip().split()
+            if len(name_parts) >= 2:
+                initials = name_parts[0][0] + name_parts[-1][0]
+            else:
+                initials = name_parts[0][:2] if name_parts else "U"
+            return f"https://ui-avatars.com/api/?name={initials.upper()}&bold=true&background=4FACFE&color=ffffff&size=240&font-size=0.40"
+        
         # Extract officers data from Yahoo Finance
         officers = []
         owner = None
@@ -1469,7 +1479,7 @@ def get_board_members(ticker: str):
                         "name": name,
                         "title": officer.get("title", "Founder & CEO"),
                         "pay": officer.get("totalPay", 0),
-                        "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed={name.replace(' ', '_')}&scale=80",
+                        "photo_url": get_avatar_url(name),
                         "role": "Founder & CEO"
                     }
                 elif not chairperson and ("chairman" in title or "board" in title):
@@ -1477,7 +1487,7 @@ def get_board_members(ticker: str):
                         "name": name,
                         "title": officer.get("title", "Chairperson"),
                         "pay": officer.get("totalPay", 0),
-                        "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed={name.replace(' ', '_')}&scale=80",
+                        "photo_url": get_avatar_url(name),
                         "role": "Chairperson"
                     }
                 else:
@@ -1485,7 +1495,7 @@ def get_board_members(ticker: str):
                         "name": name,
                         "title": officer.get("title", "N/A"),
                         "pay": officer.get("totalPay", 0),
-                        "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed={name.replace(' ', '_')}&scale=80"
+                        "photo_url": get_avatar_url(name)
                     })
         
         # If no officers found, create defaults
@@ -1494,7 +1504,7 @@ def get_board_members(ticker: str):
                 "name": "Leadership Team",
                 "title": "Management",
                 "pay": 0,
-                "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed=default&scale=80"
+                "photo_url": get_avatar_url("LT")
             })
         
         # Prepare leadership section with owner and chairperson at the top
