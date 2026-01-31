@@ -1455,30 +1455,61 @@ def get_board_members(ticker: str):
         
         # Extract officers data from Yahoo Finance
         officers = []
-        if "companyOfficers" in info and info["companyOfficers"]:
-            for officer in info["companyOfficers"][:10]:  # Limit to top 10
-                officers.append({
-                    "name": officer.get("name", "N/A"),
-                    "title": officer.get("title", "N/A"),
-                    "pay": officer.get("totalPay", 0),
-                    "photo_url": f"https://ui-avatars.com/api/?name={officer.get('name', 'N/A')}&background=4FACFE&color=fff"
-                })
+        owner = None
+        chairperson = None
         
-        # If no officers found, return CEO info
-        if not officers and "companyOfficers" not in info:
-            ceo_name = info.get("companyOfficers", [{}])[0].get("name", "Not Available") if info.get("companyOfficers") else "Not Available"
+        if "companyOfficers" in info and info["companyOfficers"]:
+            for i, officer in enumerate(info["companyOfficers"][:12]):
+                title = officer.get("title", "N/A").lower()
+                name = officer.get("name", "N/A")
+                
+                # Identify owner and chairperson
+                if i == 0 and not owner and ("founder" in title or "chairman" in title or "ceo" in title):
+                    owner = {
+                        "name": name,
+                        "title": officer.get("title", "Founder & CEO"),
+                        "pay": officer.get("totalPay", 0),
+                        "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed={name.replace(' ', '_')}&scale=80",
+                        "role": "Founder & CEO"
+                    }
+                elif not chairperson and ("chairman" in title or "board" in title):
+                    chairperson = {
+                        "name": name,
+                        "title": officer.get("title", "Chairperson"),
+                        "pay": officer.get("totalPay", 0),
+                        "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed={name.replace(' ', '_')}&scale=80",
+                        "role": "Chairperson"
+                    }
+                else:
+                    officers.append({
+                        "name": name,
+                        "title": officer.get("title", "N/A"),
+                        "pay": officer.get("totalPay", 0),
+                        "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed={name.replace(' ', '_')}&scale=80"
+                    })
+        
+        # If no officers found, create defaults
+        if not officers:
             officers.append({
-                "name": ceo_name,
-                "title": "Chief Executive Officer",
+                "name": "Leadership Team",
+                "title": "Management",
                 "pay": 0,
-                "photo_url": f"https://ui-avatars.com/api/?name={ceo_name}&background=4FACFE&color=fff"
+                "photo_url": f"https://api.dicebear.com/7.x/avataaars/svg?seed=default&scale=80"
             })
+        
+        # Prepare leadership section with owner and chairperson at the top
+        leadership = []
+        if owner:
+            leadership.append(owner)
+        if chairperson:
+            leadership.append(chairperson)
         
         return {
             "ticker": ticker,
             "company_name": info.get("longName", ticker),
+            "leadership": leadership,  # Owner and Chairperson at top
             "board_members": officers,
-            "board_size": len(officers)
+            "board_size": len(officers) + len(leadership)
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Board members not found for {ticker}: {str(e)}")
