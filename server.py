@@ -1832,6 +1832,23 @@ def get_company_history(ticker: str):
         t = yf.Ticker(ticker)
         info = t.info
         
+        # Check if we got valid data
+        if not info or not info.get("longName"):
+            return {
+                "ticker": ticker,
+                "company_name": ticker,
+                "founded": "N/A",
+                "sector": "N/A",
+                "industry": "N/A",
+                "country": "N/A",
+                "website": "N/A",
+                "description": "Company information not available from Yahoo Finance. This may be a new listing, a foreign ticker, or the data may not be publicly available.",
+                "headquarters": "N/A",
+                "employees": "N/A",
+                "market_cap": "N/A",
+                "beta": "N/A"
+            }
+        
         return {
             "ticker": ticker,
             "company_name": info.get("longName", ticker),
@@ -1847,7 +1864,21 @@ def get_company_history(ticker: str):
             "beta": info.get("beta", "N/A")
         }
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Company history not found for {ticker}: {str(e)}")
+        # Return default data instead of raising exception
+        return {
+            "ticker": ticker,
+            "company_name": ticker,
+            "founded": "N/A",
+            "sector": "N/A",
+            "industry": "N/A",
+            "country": "N/A",
+            "website": "N/A",
+            "description": f"Unable to fetch company information. Error: {str(e)}",
+            "headquarters": "N/A",
+            "employees": "N/A",
+            "market_cap": "N/A",
+            "beta": "N/A"
+        }
 
 
 @app.get("/board-members/{ticker}")
@@ -1920,7 +1951,19 @@ def get_board_members(ticker: str):
             "board_size": len(officers) + len(leadership)
         }
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Board members not found for {ticker}: {str(e)}")
+        # Return default data instead of raising exception
+        return {
+            "ticker": ticker,
+            "company_name": ticker,
+            "leadership": [],
+            "board_members": [{
+                "name": "Board Information",
+                "title": "Not Available",
+                "pay": 0,
+                "photo_url": get_avatar_url("NA")
+            }],
+            "board_size": 0
+        }
 
 
 @app.get("/compendium/{ticker}")
@@ -2090,7 +2133,7 @@ def chat_with_bot(request: ChatRequest):
 if __name__ == "__main__":
     # Use this guarded runner on Windows to avoid multiprocessing/reload recursion
     import uvicorn
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
 
 
 
