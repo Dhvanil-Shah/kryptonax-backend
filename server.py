@@ -779,7 +779,8 @@ import string
 import os
 from dotenv import load_dotenv
 import time
-from quality_score import calculate_quality_score  # Import quality score calculator
+from quality_score import calculate_quality_score
+from data_fetcher import enhance_stock_info  # Import quality score calculator
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()

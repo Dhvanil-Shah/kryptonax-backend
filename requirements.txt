@@ -5,6 +5,8 @@ motor
 yfinance
 textblob
 requests
+beautifulsoup4
+lxml
 python-multipart
 python-jose[cryptography]
 passlib
