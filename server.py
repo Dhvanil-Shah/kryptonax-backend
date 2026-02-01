@@ -1844,15 +1844,32 @@ def get_company_history(ticker: str):
             result = cached["data"]
             return result
     
+    # Try with retries (3 attempts with increasing delays)
+    for attempt in range(3):
+        try:
+            # Add delay to avoid rate limiting (increases with each retry)
+            time.sleep(1 + attempt)
+            
+            t = yf.Ticker(ticker)
+            info = t.info
+            
+            # Break if we got valid data
+            if info and (info.get("longName") or info.get("shortName") or info.get("symbol")):
+                break
+        except Exception as e:
+            print(f"❌ Attempt {attempt + 1} failed for {ticker}: {str(e)}")
+            if attempt == 2:  # Last attempt
+                raise e
+            continue
+    
     try:
-        # Add delay to avoid rate limiting
-        time.sleep(1)
+    try:
         
-        t = yf.Ticker(ticker)
-        info = t.info
+        # Check if we got valid data (accept any of these fields)
+        company_name = info.get("longName") or info.get("shortName") or ticker
+        has_data = info.get("longName") or info.get("shortName") or info.get("sector") or info.get("industry")
         
-        # Check if we got valid data
-        if not info or not info.get("longName"):
+        if not has_data:
             result = {
                 "ticker": ticker,
                 "company_name": ticker,
@@ -1861,7 +1878,7 @@ def get_company_history(ticker: str):
                 "industry": "N/A",
                 "country": "N/A",
                 "website": "N/A",
-                "description": "Company information not available from Yahoo Finance. This may be a new listing, a foreign ticker, or the data may not be publicly available.",
+                "description": "Company information not available from Yahoo Finance. This may be a delisted stock, incorrect ticker symbol, or data may not be publicly available. Try using official ticker symbols (e.g., AAPL, TSLA, RELIANCE.NS)",
                 "headquarters": "N/A",
                 "employees": "N/A",
                 "market_cap": "N/A",
@@ -1870,14 +1887,14 @@ def get_company_history(ticker: str):
         else:
             result = {
                 "ticker": ticker,
-                "company_name": info.get("longName", ticker),
+                "company_name": company_name,
                 "founded": info.get("founded", "N/A"),
                 "sector": info.get("sector", "N/A"),
                 "industry": info.get("industry", "N/A"),
                 "country": info.get("country", "N/A"),
                 "website": info.get("website", "N/A"),
-                "description": info.get("longBusinessSummary", "No description available"),
-                "headquarters": info.get("city", "") + ", " + info.get("state", ""),
+                "description": info.get("longBusinessSummary", info.get("description", "No description available")),
+                "headquarters": f"{info.get('city', '')}{', ' + info.get('state', '') if info.get('state') else ''}".strip(', '),
                 "employees": info.get("fullTimeEmployees", "N/A"),
                 "market_cap": info.get("marketCap", "N/A"),
                 "beta": info.get("beta", "N/A")
@@ -1909,7 +1926,7 @@ def get_company_history(ticker: str):
             "industry": "N/A",
             "country": "N/A",
             "website": "N/A",
-            "description": f"Unable to fetch company information. The service may be temporarily unavailable. Please try again later.",
+            "description": f"Unable to fetch company information due to network issues. Yahoo Finance may be temporarily unavailable or rate-limiting requests. Please try again in a few minutes.",
             "headquarters": "N/A",
             "employees": "N/A",
             "market_cap": "N/A",
@@ -1930,9 +1947,26 @@ def get_board_members(ticker: str):
     try:
         # Add delay to avoid rate limiting
         time.sleep(1)
-        
-        t = yf.Ticker(ticker)
-        info = t.info
+    
+    # Try with retries (3 attempts with increasing delays)
+    for attempt in range(3):
+        try:
+            # Add delay to avoid rate limiting
+            time.sleep(1 + attempt)
+            
+            t = yf.Ticker(ticker)
+            info = t.info
+            
+            # Break if we got valid data
+            if info and info.get("symbol"):
+                break
+        except Exception as e:
+            print(f"❌ Attempt {attempt + 1} failed for {ticker} board: {str(e)}")
+            if attempt == 2:  # Last attempt
+                raise e
+            continue
+    
+    try:
         
         # Extract officers data from Yahoo Finance
         officers = []
@@ -2120,6 +2154,13 @@ def get_quality_score(ticker: str):
         # Calculate real-time quality score
         time.sleep(1)  # Rate limit protection
         result = calculate_quality_score(ticker)
+        
+        # Check if result contains an error
+        if result and "error" in result:
+            raise HTTPException(
+                status_code=404,
+                detail=result.get("message", result.get("error"))
+            )
         
         if result is None:
             raise HTTPException(

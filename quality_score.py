@@ -15,11 +15,38 @@ def calculate_quality_score(ticker: str):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # Get historical data for trend analysis
-        hist = stock.history(period="5y")
+        # Validate we have minimum required data
+        if not info or not info.get("symbol"):
+            return {
+                "error": "Unable to fetch stock data from Yahoo Finance",
+                "message": "This ticker may not exist, be delisted, or data is unavailable"
+            }
         
-        if hist.empty or not info:
-            return None
+        # Get historical data for trend analysis
+        try:
+            hist = stock.history(period="5y")
+        except:
+            hist = None
+        
+        # Check if we have enough data to calculate score
+        if hist is None or hist.empty:
+            return {
+                "error": "Insufficient historical data available",
+                "message": f"{ticker} may be a new listing or data is not publicly available. Quality score requires at least 1 year of trading history."
+            }
+        
+        # Check for minimum fundamental data
+        has_financials = any([
+            info.get("totalRevenue"),
+            info.get("marketCap"),
+            info.get("profitMargins")
+        ])
+        
+        if not has_financials:
+            return {
+                "error": "Unable to calculate quality score for BHEL.NS. Insufficient data available.",
+                "message": "This company may not report financial data to Yahoo Finance, or the ticker format may be incorrect. Try alternative ticker formats or use major stocks (AAPL, TSLA, RELIANCE.NS)."
+            }
         
         # 1. FUNDAMENTAL STRENGTH (0-100)
         fundamental_score = calculate_fundamental_strength(info, stock)
@@ -52,7 +79,7 @@ def calculate_quality_score(ticker: str):
         
         return {
             "ticker": ticker,
-            "company_name": info.get("longName", ticker),
+            "company_name": info.get("longName", info.get("shortName", ticker)),
             "overall_score": overall_score,
             "grade": get_grade(overall_score),
             "fundamental_score": fundamental_score,
@@ -72,7 +99,10 @@ def calculate_quality_score(ticker: str):
         }
     except Exception as e:
         print(f"Error calculating quality score for {ticker}: {str(e)}")
-        return None
+        return {
+            "error": "System error calculating quality score",
+            "message": f"An unexpected error occurred: {str(e)}. Please try again or contact support."
+        }
 
 
 def calculate_fundamental_strength(info, stock):
