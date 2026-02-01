@@ -882,6 +882,7 @@ users_collection = db["users"]
 subscriptions_collection = db["subscriptions"]
 news_collection = db["news_articles"]
 fav_collection = db["favorites"]
+company_data_collection = db["company_data"]  # Persistent cache for company data
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -1833,17 +1834,18 @@ def get_report_with_fallback(ticker: str, report_type: str, year: int, quarter: 
 @app.get("/company-history/{ticker}")
 def get_company_history(ticker: str):
     """Fetch company history, founding info, and key milestones."""
-    # Check cache first
-    cache_key = f"history_{ticker}"
-    if cache_key in company_cache:
-        cached_data = company_cache[cache_key]
-        if time.time() - cached_data["timestamp"] < CACHE_TTL:
-            print(f"✅ Returning cached data for {ticker}")
-            return cached_data["data"]
+    # Check MongoDB cache first (persistent across restarts)
+    cached = company_data_collection.find_one({"ticker": ticker, "type": "history"})
+    if cached and "timestamp" in cached:
+        # Check if cache is still valid (24 hours)
+        if (datetime.utcnow() - cached["timestamp"]).total_seconds() < 86400:
+            print(f"✅ Returning MongoDB cached data for {ticker}")
+            result = cached["data"]
+            return result
     
     try:
         # Add delay to avoid rate limiting
-        time.sleep(0.5)
+        time.sleep(1)
         
         t = yf.Ticker(ticker)
         info = t.info
@@ -1879,17 +1881,25 @@ def get_company_history(ticker: str):
                 "market_cap": info.get("marketCap", "N/A"),
                 "beta": info.get("beta", "N/A")
             }
-        
-        # Cache the result
-        company_cache[cache_key] = {
-            "data": result,
-            "timestamp": time.time()
-        }
+            
+            # Cache to MongoDB only if we got valid data
+            company_data_collection.update_one(
+                {"ticker": ticker, "type": "history"},
+                {"$set": {"data": result, "timestamp": datetime.utcnow()}},
+                upsert=True
+            )
+            print(f"✅ Cached {ticker} to MongoDB")
         
         return result
     except Exception as e:
         print(f"❌ Error fetching {ticker}: {str(e)}")
-        # Return default data instead of raising exception
+        
+        # If API fails but we have old cache, use it anyway
+        if cached and "data" in cached:
+            print(f"⚠️ Using stale cache for {ticker}")
+            return cached["data"]
+        
+        # Return default data as last resort
         return {
             "ticker": ticker,
             "company_name": ticker,
@@ -1909,17 +1919,16 @@ def get_company_history(ticker: str):
 @app.get("/board-members/{ticker}")
 def get_board_members(ticker: str):
     """Fetch board members and leadership information with Wikipedia photos."""
-    # Check cache first
-    cache_key = f"board_{ticker}"
-    if cache_key in company_cache:
-        cached_data = company_cache[cache_key]
-        if time.time() - cached_data["timestamp"] < CACHE_TTL:
-            print(f"✅ Returning cached board data for {ticker}")
-            return cached_data["data"]
+    # Check MongoDB cache first
+    cached = company_data_collection.find_one({"ticker": ticker, "type": "board"})
+    if cached and "timestamp" in cached:
+        if (datetime.utcnow() - cached["timestamp"]).total_seconds() < 86400:
+            print(f"✅ Returning MongoDB cached board data for {ticker}")
+            return cached["data"]
     
     try:
         # Add delay to avoid rate limiting
-        time.sleep(0.5)
+        time.sleep(1)
         
         t = yf.Ticker(ticker)
         info = t.info
@@ -1972,7 +1981,7 @@ def get_board_members(ticker: str):
                 "photo_url": get_avatar_url("LT")
             })
         
-        # Prepare leadership section with owner and chairperson at the top
+        # Prepare leadership section
         leadership = []
         if owner:
             leadership.append(owner)
@@ -1982,21 +1991,30 @@ def get_board_members(ticker: str):
         result = {
             "ticker": ticker,
             "company_name": info.get("longName", ticker),
-            "leadership": leadership,  # Owner and Chairperson at top
+            "leadership": leadership,
             "board_members": officers,
             "board_size": len(officers) + len(leadership)
         }
         
-        # Cache the result
-        company_cache[cache_key] = {
-            "data": result,
-            "timestamp": time.time()
-        }
+        # Cache to MongoDB if we got valid data
+        if info.get("companyOfficers"):
+            company_data_collection.update_one(
+                {"ticker": ticker, "type": "board"},
+                {"$set": {"data": result, "timestamp": datetime.utcnow()}},
+                upsert=True
+            )
+            print(f"✅ Cached board data for {ticker} to MongoDB")
         
         return result
     except Exception as e:
         print(f"❌ Error fetching board for {ticker}: {str(e)}")
-        # Return default data instead of raising exception
+        
+        # Use stale cache if available
+        if cached and "data" in cached:
+            print(f"⚠️ Using stale board cache for {ticker}")
+            return cached["data"]
+        
+        # Return default data
         return {
             "ticker": ticker,
             "company_name": ticker,
