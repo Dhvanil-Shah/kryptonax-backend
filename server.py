@@ -2367,6 +2367,140 @@ def chat_with_bot(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Chatbot error: {str(e)}")
 
 
+# ====================================
+# MARKET INTELLIGENCE ENDPOINTS
+# ====================================
+from market_service import MarketDataService
+
+# Initialize market service
+market_service = MarketDataService(company_data_collection)
+
+@app.get("/market/overview")
+def get_market_overview():
+    """Get global market indices overview"""
+    symbols = [
+        "^NSEI",      # Nifty 50
+        "^BSESN",     # Sensex
+        "^GSPC",      # S&P 500
+        "^DJI",       # Dow Jones
+        "^IXIC",      # Nasdaq
+        "GC=F",       # Gold
+        "CL=F"        # Crude Oil
+    ]
+    try:
+        data = market_service.get_market_overview(symbols)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/market/movers")
+def get_top_movers(market: str = "india", limit: int = 5):
+    """Get top gainers and losers"""
+    try:
+        data = market_service.get_top_movers(market, limit)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/market/sectors")
+def get_sector_performance():
+    """Get sector-wise performance"""
+    try:
+        data = market_service.get_sector_performance()
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/market/52week")
+def get_52week_highlow(market: str = "india"):
+    """Get stocks near 52-week high/low"""
+    try:
+        data = market_service.get_52week_highlow(market)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/market/volume")
+def get_volume_leaders(market: str = "india", limit: int = 5):
+    """Get volume leaders"""
+    try:
+        data = market_service.get_volume_leaders(market, limit)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/market/sentiment")
+def get_market_sentiment():
+    """Get market sentiment indicator"""
+    try:
+        data = market_service.get_market_sentiment()
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/market/calendar")
+def get_market_calendar():
+    """Get upcoming IPOs, dividends, and economic events"""
+    # Static data for demonstration - can be enhanced with real APIs
+    events = {
+        "ipos": [
+            {"company": "Tech Innovations Ltd", "date": "2026-02-15", "price_range": "₹450-₹500"},
+            {"company": "Green Energy Corp", "date": "2026-02-22", "price_range": "₹800-₹900"},
+            {"company": "Digital Payments Inc", "date": "2026-03-05", "price_range": "₹350-₹400"}
+        ],
+        "dividends": [
+            {"company": "RELIANCE.NS", "ex_date": "2026-02-10", "dividend": "₹8.5"},
+            {"company": "TCS.NS", "ex_date": "2026-02-18", "dividend": "₹25"},
+            {"company": "INFY.NS", "ex_date": "2026-02-25", "dividend": "₹18"}
+        ],
+        "economic": [
+            {"event": "RBI Monetary Policy", "date": "2026-02-08", "impact": "high"},
+            {"event": "US Jobs Report", "date": "2026-02-05", "impact": "high"},
+            {"event": "India GDP Data", "date": "2026-02-28", "impact": "medium"}
+        ]
+    }
+    return {"status": "success", "data": events}
+
+@app.get("/market/insider")
+def get_insider_trading():
+    """Get insider trading activity"""
+    # Static data for demonstration
+    insider_data = [
+        {"company": "RELIANCE.NS", "insider": "Mukesh Ambani", "transaction": "Buy", "shares": 50000, "date": "2026-01-28"},
+        {"company": "TCS.NS", "insider": "N. Chandrasekaran", "transaction": "Buy", "shares": 25000, "date": "2026-01-27"},
+        {"company": "INFY.NS", "insider": "Salil Parekh", "transaction": "Sell", "shares": 10000, "date": "2026-01-25"}
+    ]
+    return {"status": "success", "data": insider_data}
+
+@app.get("/market/valuation")
+def get_valuation_metrics(market: str = "india"):
+    """Get key valuation metrics"""
+    # This would typically fetch from financial data APIs
+    universes = {
+        "india": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"],
+        "us": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]
+    }
+    
+    stocks = universes.get(market, universes["india"])
+    valuations = []
+    
+    for symbol in stocks:
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            valuations.append({
+                "symbol": symbol,
+                "name": symbol.replace(".NS", "").replace(".BO", ""),
+                "pe_ratio": round(info.get("trailingPE", 0), 2) if info.get("trailingPE") else "N/A",
+                "pb_ratio": round(info.get("priceToBook", 0), 2) if info.get("priceToBook") else "N/A",
+                "div_yield": round(info.get("dividendYield", 0) * 100, 2) if info.get("dividendYield") else "N/A"
+            })
+        except:
+            continue
+    
+    return {"status": "success", "data": valuations}
+
+
 if __name__ == "__main__":
     # Use this guarded runner on Windows to avoid multiprocessing/reload recursion
     import uvicorn
