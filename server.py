@@ -1845,26 +1845,11 @@ def get_company_history(ticker: str):
             result = cached["data"]
             return result
     
-    # Try with retries (3 attempts with increasing delays)
-    for attempt in range(3):
-        try:
-            # Add delay to avoid rate limiting (increases with each retry)
-            time.sleep(1 + attempt)
-            
-            t = yf.Ticker(ticker)
-            info = t.info
-            
-            # Break if we got valid data
-            if info and (info.get("longName") or info.get("shortName") or info.get("symbol")):
-                break
-        except Exception as e:
-            print(f"❌ Attempt {attempt + 1} failed for {ticker}: {str(e)}")
-            if attempt == 2:  # Last attempt
-                raise e
-            continue
-    
     try:
-    try:
+        # Use enhanced multi-source fetcher
+        info, stock, source, actual_ticker = enhance_stock_info(ticker)
+        
+        print(f"📊 Data source for {ticker}: {source} (using {actual_ticker})")
         
         # Check if we got valid data (accept any of these fields)
         company_name = info.get("longName") or info.get("shortName") or ticker
@@ -1946,28 +1931,10 @@ def get_board_members(ticker: str):
             return cached["data"]
     
     try:
-        # Add delay to avoid rate limiting
-        time.sleep(1)
-    
-    # Try with retries (3 attempts with increasing delays)
-    for attempt in range(3):
-        try:
-            # Add delay to avoid rate limiting
-            time.sleep(1 + attempt)
-            
-            t = yf.Ticker(ticker)
-            info = t.info
-            
-            # Break if we got valid data
-            if info and info.get("symbol"):
-                break
-        except Exception as e:
-            print(f"❌ Attempt {attempt + 1} failed for {ticker} board: {str(e)}")
-            if attempt == 2:  # Last attempt
-                raise e
-            continue
-    
-    try:
+        # Use enhanced multi-source fetcher
+        info, stock, source, actual_ticker = enhance_stock_info(ticker)
+        
+        print(f"📊 Board data source for {ticker}: {source}")
         
         # Extract officers data from Yahoo Finance
         officers = []
