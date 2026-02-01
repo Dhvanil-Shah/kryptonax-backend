@@ -766,7 +766,7 @@ import pymongo
 from datetime import datetime, timedelta
 import yfinance as yf
 from ai import get_sentiment 
-from typing import List
+from typing import List, Dict
 import google.generativeai as genai
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -778,9 +778,14 @@ import random
 import string
 import os
 from dotenv import load_dotenv
+import time
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
+
+# ===== CACHING TO AVOID RATE LIMITS =====
+company_cache: Dict[str, Dict] = {}
+CACHE_TTL = 3600  # Cache for 1 hour to reduce Yahoo Finance API calls
 
 # --- CONFIGURATION ---
 API_KEY = "9f07c51e4e2145569ccba561e4e0d81a" 
@@ -1828,13 +1833,24 @@ def get_report_with_fallback(ticker: str, report_type: str, year: int, quarter: 
 @app.get("/company-history/{ticker}")
 def get_company_history(ticker: str):
     """Fetch company history, founding info, and key milestones."""
+    # Check cache first
+    cache_key = f"history_{ticker}"
+    if cache_key in company_cache:
+        cached_data = company_cache[cache_key]
+        if time.time() - cached_data["timestamp"] < CACHE_TTL:
+            print(f"✅ Returning cached data for {ticker}")
+            return cached_data["data"]
+    
     try:
+        # Add delay to avoid rate limiting
+        time.sleep(0.5)
+        
         t = yf.Ticker(ticker)
         info = t.info
         
         # Check if we got valid data
         if not info or not info.get("longName"):
-            return {
+            result = {
                 "ticker": ticker,
                 "company_name": ticker,
                 "founded": "N/A",
@@ -1848,22 +1864,31 @@ def get_company_history(ticker: str):
                 "market_cap": "N/A",
                 "beta": "N/A"
             }
+        else:
+            result = {
+                "ticker": ticker,
+                "company_name": info.get("longName", ticker),
+                "founded": info.get("founded", "N/A"),
+                "sector": info.get("sector", "N/A"),
+                "industry": info.get("industry", "N/A"),
+                "country": info.get("country", "N/A"),
+                "website": info.get("website", "N/A"),
+                "description": info.get("longBusinessSummary", "No description available"),
+                "headquarters": info.get("city", "") + ", " + info.get("state", ""),
+                "employees": info.get("fullTimeEmployees", "N/A"),
+                "market_cap": info.get("marketCap", "N/A"),
+                "beta": info.get("beta", "N/A")
+            }
         
-        return {
-            "ticker": ticker,
-            "company_name": info.get("longName", ticker),
-            "founded": info.get("founded", "N/A"),
-            "sector": info.get("sector", "N/A"),
-            "industry": info.get("industry", "N/A"),
-            "country": info.get("country", "N/A"),
-            "website": info.get("website", "N/A"),
-            "description": info.get("longBusinessSummary", "No description available"),
-            "headquarters": info.get("city", "") + ", " + info.get("state", ""),
-            "employees": info.get("fullTimeEmployees", "N/A"),
-            "market_cap": info.get("marketCap", "N/A"),
-            "beta": info.get("beta", "N/A")
+        # Cache the result
+        company_cache[cache_key] = {
+            "data": result,
+            "timestamp": time.time()
         }
+        
+        return result
     except Exception as e:
+        print(f"❌ Error fetching {ticker}: {str(e)}")
         # Return default data instead of raising exception
         return {
             "ticker": ticker,
@@ -1873,7 +1898,7 @@ def get_company_history(ticker: str):
             "industry": "N/A",
             "country": "N/A",
             "website": "N/A",
-            "description": f"Unable to fetch company information. Error: {str(e)}",
+            "description": f"Unable to fetch company information. The service may be temporarily unavailable. Please try again later.",
             "headquarters": "N/A",
             "employees": "N/A",
             "market_cap": "N/A",
@@ -1884,7 +1909,18 @@ def get_company_history(ticker: str):
 @app.get("/board-members/{ticker}")
 def get_board_members(ticker: str):
     """Fetch board members and leadership information with Wikipedia photos."""
+    # Check cache first
+    cache_key = f"board_{ticker}"
+    if cache_key in company_cache:
+        cached_data = company_cache[cache_key]
+        if time.time() - cached_data["timestamp"] < CACHE_TTL:
+            print(f"✅ Returning cached board data for {ticker}")
+            return cached_data["data"]
+    
     try:
+        # Add delay to avoid rate limiting
+        time.sleep(0.5)
+        
         t = yf.Ticker(ticker)
         info = t.info
         
@@ -1943,14 +1979,23 @@ def get_board_members(ticker: str):
         if chairperson:
             leadership.append(chairperson)
         
-        return {
+        result = {
             "ticker": ticker,
             "company_name": info.get("longName", ticker),
             "leadership": leadership,  # Owner and Chairperson at top
             "board_members": officers,
             "board_size": len(officers) + len(leadership)
         }
+        
+        # Cache the result
+        company_cache[cache_key] = {
+            "data": result,
+            "timestamp": time.time()
+        }
+        
+        return result
     except Exception as e:
+        print(f"❌ Error fetching board for {ticker}: {str(e)}")
         # Return default data instead of raising exception
         return {
             "ticker": ticker,
@@ -1958,7 +2003,7 @@ def get_board_members(ticker: str):
             "leadership": [],
             "board_members": [{
                 "name": "Board Information",
-                "title": "Not Available",
+                "title": "Temporarily Unavailable",
                 "pay": 0,
                 "photo_url": get_avatar_url("NA")
             }],
