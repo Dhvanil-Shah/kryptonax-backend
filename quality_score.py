@@ -5,6 +5,7 @@ Analyzes fundamental strength, dividend reliability, management quality, and bus
 import yfinance as yf
 from datetime import datetime, timedelta
 import statistics
+from professional_fetcher import enhance_stock_info_professional
 
 def calculate_quality_score(ticker: str):
     """
@@ -12,19 +13,21 @@ def calculate_quality_score(ticker: str):
     Returns detailed breakdown of scores
     """
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        # Use professional fetcher with retry logic and rate limiting
+        info, stock, source, actual_ticker = enhance_stock_info_professional(ticker)
+        
+        print(f"📊 Quality score data source: {source} for {ticker}")
         
         # Validate we have minimum required data
         if not info or not info.get("symbol"):
             return {
                 "error": "Unable to fetch stock data from Yahoo Finance",
-                "message": "This ticker may not exist, be delisted, or data is unavailable"
+                "message": "This ticker may not exist, be delisted, or data is unavailable. Please verify the ticker symbol."
             }
         
         # Get historical data for trend analysis
         try:
-            hist = stock.history(period="5y")
+            hist = stock.history(period="5y") if stock else None
         except:
             hist = None
         
@@ -44,8 +47,8 @@ def calculate_quality_score(ticker: str):
         
         if not has_financials:
             return {
-                "error": "Unable to calculate quality score for BHEL.NS. Insufficient data available.",
-                "message": "This company may not report financial data to Yahoo Finance, or the ticker format may be incorrect. Try alternative ticker formats or use major stocks (AAPL, TSLA, RELIANCE.NS)."
+                "error": f"Unable to calculate quality score for {ticker}. Insufficient financial data.",
+                "message": "This company may not report financial data publicly, or the ticker format may be incorrect. For Indian stocks, use .NS (NSE) or .BO (BSE) suffix."
             }
         
         # 1. FUNDAMENTAL STRENGTH (0-100)
