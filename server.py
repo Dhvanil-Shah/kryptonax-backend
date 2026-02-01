@@ -1269,7 +1269,33 @@ def remove_favorite(ticker: str, current_user: dict = Depends(get_current_user))
 # --- DATA ENDPOINTS (Condensed) ---
 def fetch_from_api_and_save(ticker):
     search_query = ticker.replace(".NS", "").replace(".BO", "")
-    mappings = { "RELIANCE": "Reliance Industries", "TCS": "Tata Consultancy Services", "INFY": "Infosys", "HDFCBANK": "HDFC Bank", "BTC-USD": "Bitcoin Crypto", "GC=F": "Gold Price", "SI=F": "Silver Price" }
+    
+    # Enhanced mappings for companies, indices, ETFs, and commodities
+    mappings = { 
+        "RELIANCE": "Reliance Industries", 
+        "TCS": "Tata Consultancy Services", 
+        "INFY": "Infosys", 
+        "HDFCBANK": "HDFC Bank", 
+        "BTC-USD": "Bitcoin Crypto", 
+        "GC=F": "Gold Price", 
+        "SI=F": "Silver Price",
+        # Indian Indices
+        "NIFTY_50": "Nifty 50 India stock market",
+        "NIFTY50": "Nifty 50 India stock market",
+        "NIFTY": "Nifty India stock market",
+        "SENSEX": "Sensex BSE India stock market",
+        "BANKNIFTY": "Bank Nifty India banking index",
+        "NIFTYNEXT50": "Nifty Next 50 India",
+        # US Indices
+        "^GSPC": "S&P 500 stock market",
+        "^DJI": "Dow Jones Industrial Average",
+        "^IXIC": "Nasdaq stock market",
+        "^NYA": "NYSE Composite",
+        # ETFs and others
+        "SPY": "S&P 500 ETF stock market",
+        "QQQ": "Nasdaq 100 ETF",
+        "NSC": "National Savings Certificate India investment"
+    }
     if search_query in mappings: search_query = mappings[search_query]
     try:
         url = f"https://newsapi.org/v2/everything?q={search_query}&apiKey={API_KEY}&language=en&sortBy=publishedAt&from={(datetime.now() - timedelta(days=28)).strftime('%Y-%m-%d')}&pageSize=50"
@@ -1455,12 +1481,36 @@ def get_general_news(category: str = "all", regions: str = "all", states: str = 
 @app.get("/news/{ticker}")
 def get_news(ticker: str, period: str = "30d"): 
     ticker = ticker.upper()
-    if news_collection.count_documents({"ticker": ticker}) < 5: fetch_from_api_and_save(ticker)
+    
+    # Check cache and fetch if needed
+    if news_collection.count_documents({"ticker": ticker}) < 5: 
+        fetch_from_api_and_save(ticker)
+    
     all_news = list(news_collection.find({"ticker": ticker}, {"_id": 0}).sort("publishedAt", -1))
+    
+    # If no news found and it looks like an index/ETF, provide helpful message
+    if len(all_news) == 0:
+        # Check if it's a known index/ETF pattern
+        index_patterns = ["NIFTY", "SENSEX", "^", "_50", "NSC", "SPY", "QQQ", "DJI", "GSPC"]
+        is_index = any(pattern in ticker for pattern in index_patterns)
+        
+        if is_index:
+            return [{
+                "source": {"id": None, "name": "Kryptonax"},
+                "title": f"Market News for {ticker}",
+                "description": f"News aggregation for index/ETF symbols like {ticker} is limited. For detailed market analysis, try searching for constituent stocks or check the General News section for broader market updates.",
+                "url": f"https://kryptonax.vercel.app/",
+                "publishedAt": datetime.now().isoformat(),
+                "ticker": ticker,
+                "sentiment": "neutral"
+            }]
+    
     filtered = []
     limit = int(period.replace("d", "")) if "d" in period else 30
     for n in all_news:
-        if (datetime.now() - datetime.strptime(n['publishedAt'][:10], '%Y-%m-%d')).days <= (2 if limit==1 else limit): filtered.append(n)
+        if (datetime.now() - datetime.strptime(n['publishedAt'][:10], '%Y-%m-%d')).days <= (2 if limit==1 else limit): 
+            filtered.append(n)
+    
     return filtered if filtered else all_news
 
 @app.get("/quote/{ticker}")
