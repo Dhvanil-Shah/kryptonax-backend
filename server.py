@@ -2169,6 +2169,21 @@ def get_quality_score(ticker: str):
         )
 
 
+@app.delete("/clear-cache/{ticker}")
+def clear_ticker_cache(ticker: str):
+    """
+    Clear all cached data for a specific ticker (admin endpoint)
+    """
+    try:
+        result = company_data_collection.delete_many({"ticker": ticker})
+        return {
+            "message": f"Cleared {result.deleted_count} cache entries for {ticker}",
+            "deleted": result.deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==========================================
 #          AI CHATBOT ENDPOINT
 # ==========================================
