@@ -779,6 +779,7 @@ import string
 import os
 from dotenv import load_dotenv
 import time
+from quality_score import calculate_quality_score  # Import quality score calculator
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
@@ -2095,6 +2096,61 @@ def get_compendium(ticker: str):
         return compendium
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching compendium: {str(e)}")
+
+
+# ==========================================
+#     LONG-TERM QUALITY SCORE ENDPOINT
+# ==========================================
+
+@app.get("/quality-score/{ticker}")
+def get_quality_score(ticker: str):
+    """
+    Calculate comprehensive long-term investment quality score.
+    Analyzes: Fundamentals, Dividends, Management, Business Moat
+    Returns: 0-100 score with detailed breakdown
+    """
+    # Check MongoDB cache first (24 hour cache)
+    cached = company_data_collection.find_one({"ticker": ticker, "type": "quality_score"})
+    if cached and "timestamp" in cached:
+        if (datetime.utcnow() - cached["timestamp"]).total_seconds() < 86400:
+            print(f"✅ Returning cached quality score for {ticker}")
+            return cached["data"]
+    
+    try:
+        # Calculate real-time quality score
+        time.sleep(1)  # Rate limit protection
+        result = calculate_quality_score(ticker)
+        
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unable to calculate quality score for {ticker}. Insufficient data available."
+            )
+        
+        # Cache to MongoDB
+        company_data_collection.update_one(
+            {"ticker": ticker, "type": "quality_score"},
+            {"$set": {"data": result, "timestamp": datetime.utcnow()}},
+            upsert=True
+        )
+        print(f"✅ Calculated and cached quality score for {ticker}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error calculating quality score for {ticker}: {str(e)}")
+        
+        # Use stale cache if available
+        if cached and "data" in cached:
+            print(f"⚠️ Using stale cached quality score for {ticker}")
+            return cached["data"]
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error calculating quality score: {str(e)}"
+        )
 
 
 # ==========================================
