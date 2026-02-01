@@ -2115,8 +2115,12 @@ def get_quality_score(ticker: str):
     cached = company_data_collection.find_one({"ticker": ticker, "type": "quality_score"})
     if cached and "timestamp" in cached:
         if (datetime.utcnow() - cached["timestamp"]).total_seconds() < 86400:
-            print(f"✅ Returning cached quality score for {ticker}")
-            return cached["data"]
+            # Skip cache if it contains an error (don't cache failures)
+            if cached.get("data") and "error" not in cached.get("data", {}):
+                print(f"✅ Returning cached quality score for {ticker}")
+                return cached["data"]
+            else:
+                print(f"⚠️ Cached error found for {ticker}, recalculating...")
     
     try:
         # Calculate real-time quality score
@@ -2136,13 +2140,16 @@ def get_quality_score(ticker: str):
                 detail=f"Unable to calculate quality score for {ticker}. Insufficient data available."
             )
         
-        # Cache to MongoDB
-        company_data_collection.update_one(
-            {"ticker": ticker, "type": "quality_score"},
-            {"$set": {"data": result, "timestamp": datetime.utcnow()}},
-            upsert=True
-        )
-        print(f"✅ Calculated and cached quality score for {ticker}")
+        # Cache to MongoDB (only cache successful results, not errors)
+        if "error" not in result:
+            company_data_collection.update_one(
+                {"ticker": ticker, "type": "quality_score"},
+                {"$set": {"data": result, "timestamp": datetime.utcnow()}},
+                upsert=True
+            )
+            print(f"✅ Calculated and cached quality score for {ticker}")
+        else:
+            print(f"⚠️ Not caching error response for {ticker}")
         
         return result
         
