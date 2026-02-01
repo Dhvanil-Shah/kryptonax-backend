@@ -2501,6 +2501,45 @@ def get_valuation_metrics(market: str = "india"):
     return {"status": "success", "data": valuations}
 
 
+@app.get("/stock-price/{symbol}")
+async def get_stock_price(symbol: str):
+    """Get real-time price for ticker tape"""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1d")
+        
+        if hist.empty:
+            return {
+                "status": "error",
+                "symbol": symbol,
+                "price": None,
+                "change": 0,
+                "change_percent": 0
+            }
+        
+        current_price = hist['Close'].iloc[-1]
+        open_price = hist['Open'].iloc[0]
+        change = current_price - open_price
+        change_percent = (change / open_price) * 100
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "price": round(current_price, 2),
+            "change": round(change, 2),
+            "change_percent": round(change_percent, 2)
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "price": None,
+            "change": 0,
+            "change_percent": 0,
+            "error": str(e)
+        }
+
+
 if __name__ == "__main__":
     # Use this guarded runner on Windows to avoid multiprocessing/reload recursion
     import uvicorn
