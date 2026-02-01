@@ -2184,6 +2184,43 @@ def clear_ticker_cache(ticker: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/debug/{ticker}")
+def debug_ticker(ticker: str):
+    """
+    Debug endpoint to test data fetching
+    """
+    try:
+        from professional_fetcher import enhance_stock_info_professional
+        info, stock, source, actual_ticker = enhance_stock_info_professional(ticker)
+        
+        has_symbol = bool(info and info.get("symbol"))
+        has_hist = False
+        hist_len = 0
+        
+        if stock:
+            try:
+                hist = stock.history(period="5y")
+                has_hist = not hist.empty
+                hist_len = len(hist)
+            except:
+                pass
+        
+        return {
+            "ticker": ticker,
+            "source": source,
+            "actual_ticker": actual_ticker,
+            "has_info": bool(info),
+            "has_stock": bool(stock),
+            "has_symbol": has_symbol,
+            "symbol_value": info.get("symbol") if info else None,
+            "has_history": has_hist,
+            "history_length": hist_len,
+            "company_name": info.get("longName") if info else None
+        }
+    except Exception as e:
+        return {"error": str(e), "type": type(e).__name__}
+
+
 # ==========================================
 #          AI CHATBOT ENDPOINT
 # ==========================================
