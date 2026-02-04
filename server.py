@@ -1071,6 +1071,11 @@ def send_sms_otp_simulated(mobile, otp):
 def home():
     return {"message": "Kryptonax API Live"}
 
+@app.get("/health")
+def health_check():
+    """Lightweight health check endpoint for keep-alive pings"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 # --- AUTH ENDPOINTS ---
 
 @app.post("/register")
