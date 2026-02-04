@@ -160,73 +160,75 @@ def analyze_equity_longterm(ticker: str):
         debt_to_equity = safe_get(info, "debtToEquity", 0)
         profit_margin = safe_get(info, "profitMargins", 0) * 100
         revenue_growth = safe_get(info, "revenueGrowth", 0) * 100
-    
-    # Calculate valuation score
-    valuation_score = 50
-    if 0 < pe_ratio < 20:
-        valuation_score += 15
-    elif 20 <= pe_ratio < 30:
-        valuation_score += 10
-    
-    if 0 < pb_ratio < 3:
-        valuation_score += 15
-    elif 3 <= pb_ratio < 5:
-        valuation_score += 10
-    
-    if dividend_yield > 3:
-        valuation_score += 10
-    elif dividend_yield > 1:
-        valuation_score += 5
-    
-    if roe > 15:
-        valuation_score += 10
-    
-    # Investment verdict
-    if valuation_score >= 80:
-        verdict = "STRONG BUY - Excellent fundamentals"
-        action = "buy"
-    elif valuation_score >= 65:
-        verdict = "BUY - Good long-term potential"
-        action = "buy"
-    elif valuation_score >= 50:
-        verdict = "HOLD - Average fundamentals"
-        action = "hold"
-    else:
-        verdict = "AVOID - Weak fundamentals"
-        action = "sell"
-    
-    # Price targets (conservative for long-term)
-    avg_growth = revenue_growth if revenue_growth else 10
-    target_1y = round(current_price * (1 + avg_growth / 100), 2)
-    target_3y = round(current_price * ((1 + avg_growth / 100) ** 3), 2)
-    
-    return {
-        "type": "Equity / Long-term Investment",
-        "timeframe": "1-5+ years",
-        "score": valuation_score,
-        "verdict": verdict,
-        "action": action,
-        "current_price": round(current_price, 2),
-        "targets": {
-            "1_year": target_1y,
-            "3_year": target_3y,
-            "conservative": round(current_price * 1.1, 2),
-            "optimistic": round(current_price * 1.5, 2)
-        },
-        "fundamentals": {
-            "market_cap": market_cap,
-            "pe_ratio": round(pe_ratio, 2) if pe_ratio else "N/A",
-            "pb_ratio": round(pb_ratio, 2) if pb_ratio else "N/A",
-            "dividend_yield": round(dividend_yield, 2),
-            "roe": round(roe, 2),
-            "debt_to_equity": round(debt_to_equity, 2) if debt_to_equity else "N/A",
-            "profit_margin": round(profit_margin, 2),
-            "revenue_growth": round(revenue_growth, 2)
-        },
-        "key_strengths": get_equity_strengths(info, valuation_score),
-        "risks": get_equity_risks(info, debt_to_equity, pe_ratio),
-        "recommendation": get_equity_recommendation(valuation_score, dividend_yield, roe)
-    }
+        
+        # Calculate valuation score
+        valuation_score = 50
+        if 0 < pe_ratio < 20:
+            valuation_score += 15
+        elif 20 <= pe_ratio < 30:
+            valuation_score += 10
+        
+        if 0 < pb_ratio < 3:
+            valuation_score += 15
+        elif 3 <= pb_ratio < 5:
+            valuation_score += 10
+        
+        if dividend_yield > 3:
+            valuation_score += 10
+        elif dividend_yield > 1:
+            valuation_score += 5
+        
+        if roe > 15:
+            valuation_score += 10
+        
+        # Investment verdict
+        if valuation_score >= 80:
+            verdict = "STRONG BUY - Excellent fundamentals"
+            action = "buy"
+        elif valuation_score >= 65:
+            verdict = "BUY - Good long-term potential"
+            action = "buy"
+        elif valuation_score >= 50:
+            verdict = "HOLD - Average fundamentals"
+            action = "hold"
+        else:
+            verdict = "AVOID - Weak fundamentals"
+            action = "sell"
+        
+        # Price targets (conservative for long-term)
+        avg_growth = revenue_growth if revenue_growth else 10
+        target_1y = round(current_price * (1 + avg_growth / 100), 2)
+        target_3y = round(current_price * ((1 + avg_growth / 100) ** 3), 2)
+        
+        return {
+            "type": "Equity / Long-term Investment",
+            "timeframe": "1-5+ years",
+            "score": valuation_score,
+            "verdict": verdict,
+            "action": action,
+            "current_price": round(current_price, 2),
+            "targets": {
+                "1_year": target_1y,
+                "3_year": target_3y,
+                "conservative": round(current_price * 1.1, 2),
+                "optimistic": round(current_price * 1.5, 2)
+            },
+            "fundamentals": {
+                "market_cap": market_cap,
+                "pe_ratio": round(pe_ratio, 2) if pe_ratio else "N/A",
+                "pb_ratio": round(pb_ratio, 2) if pb_ratio else "N/A",
+                "dividend_yield": round(dividend_yield, 2),
+                "roe": round(roe, 2),
+                "debt_to_equity": round(debt_to_equity, 2) if debt_to_equity else "N/A",
+                "profit_margin": round(profit_margin, 2),
+                "revenue_growth": round(revenue_growth, 2)
+            },
+            "key_strengths": get_equity_strengths(info, valuation_score),
+            "risks": get_equity_risks(info, debt_to_equity, pe_ratio),
+            "recommendation": get_equity_recommendation(valuation_score, dividend_yield, roe)
+        }
+    except Exception as e:
+        return {"error": f"Analysis failed: {str(e)}"}
 
 
 def analyze_intraday(ticker: str):
