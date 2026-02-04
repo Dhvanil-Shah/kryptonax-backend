@@ -3,6 +3,8 @@ uvicorn
 pymongo
 motor
 yfinance
+numpy
+pandas
 textblob
 requests
 beautifulsoup4

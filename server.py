@@ -2540,6 +2540,58 @@ async def get_stock_price(symbol: str):
         }
 
 
+# ====================================
+# TRADING ANALYSIS ENDPOINTS
+# ====================================
+from trading_analysis import get_trading_analysis
+
+@app.get("/trading-analysis/{ticker}/{trading_type}")
+def get_analysis(ticker: str, trading_type: str):
+    """
+    Get professional trading analysis for different trading strategies
+    trading_type: equity_longterm, intraday, swing, positional, scalping, options
+    """
+    try:
+        # Check cache first (shorter cache for intraday/scalping)
+        cache_duration = 300 if trading_type in ["intraday", "scalping"] else 1800  # 5min or 30min
+        
+        cached = company_data_collection.find_one({
+            "ticker": ticker,
+            "type": f"trading_analysis_{trading_type}",
+            "timestamp": {"$gte": datetime.utcnow() - timedelta(seconds=cache_duration)}
+        })
+        
+        if cached:
+            print(f"📦 Using cached trading analysis for {ticker} ({trading_type})")
+            return cached["data"]
+        
+        # Calculate fresh analysis
+        print(f"🔍 Calculating {trading_type} analysis for {ticker}...")
+        result = get_trading_analysis(ticker, trading_type)
+        
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        
+        # Cache the result
+        company_data_collection.update_one(
+            {"ticker": ticker, "type": f"trading_analysis_{trading_type}"},
+            {"$set": {"data": result, "timestamp": datetime.utcnow()}},
+            upsert=True
+        )
+        print(f"✅ Calculated and cached {trading_type} analysis for {ticker}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in trading analysis for {ticker}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error calculating trading analysis: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     # Use this guarded runner on Windows to avoid multiprocessing/reload recursion
     import uvicorn
