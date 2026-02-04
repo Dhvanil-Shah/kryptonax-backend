@@ -1,5 +1,5 @@
 """
-Professional Trading Analysis System
+Professional Trading Analysis System - Optimized for Speed
 Provides real-time analysis for different trading strategies
 Supports: Equity/Long-term, Intraday, Swing, Positional, Scalping, Options
 """
@@ -11,42 +11,61 @@ from professional_fetcher import enhance_stock_info_professional
 import statistics
 
 
+def safe_get(info, key, default=0):
+    """Safely get value from dict"""
+    try:
+        val = info.get(key, default)
+        return val if val and not pd.isna(val) else default
+    except:
+        return default
+
+
 def calculate_rsi(prices, period=14):
-    """Calculate Relative Strength Index"""
-    if len(prices) < period:
+    """Calculate Relative Strength Index - Optimized"""
+    try:
+        if len(prices) < period + 1:
+            return 50
+        
+        deltas = np.diff(prices[-period-1:])
+        gains = deltas.copy()
+        losses = deltas.copy()
+        gains[gains < 0] = 0
+        losses[losses > 0] = 0
+        losses = np.abs(losses)
+        
+        avg_gain = np.mean(gains)
+        avg_loss = np.mean(losses)
+        
+        if avg_loss == 0:
+            return 100
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return float(rsi)
+    except:
         return 50
-    
-    deltas = np.diff(prices)
-    gain = np.where(deltas > 0, deltas, 0)
-    loss = np.where(deltas < 0, -deltas, 0)
-    
-    avg_gain = np.mean(gain[-period:])
-    avg_loss = np.mean(loss[-period:])
-    
-    if avg_loss == 0:
-        return 100
-    
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
 
 
 def calculate_macd(prices):
-    """Calculate MACD (Moving Average Convergence Divergence)"""
-    if len(prices) < 26:
+    """Calculate MACD - Optimized"""
+    try:
+        if len(prices) < 26:
+            return {"macd": 0, "signal": 0, "histogram": 0}
+        
+        prices_series = pd.Series(prices[-50:])  # Limit to last 50 for speed
+        ema_12 = prices_series.ewm(span=12, adjust=False).mean()
+        ema_26 = prices_series.ewm(span=26, adjust=False).mean()
+        macd_line = ema_12 - ema_26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram = macd_line - signal_line
+        
+        return {
+            "macd": float(macd_line.iloc[-1]),
+            "signal": float(signal_line.iloc[-1]),
+            "histogram": float(histogram.iloc[-1])
+        }
+    except:
         return {"macd": 0, "signal": 0, "histogram": 0}
-    
-    ema_12 = pd.Series(prices).ewm(span=12, adjust=False).mean()
-    ema_26 = pd.Series(prices).ewm(span=26, adjust=False).mean()
-    macd_line = ema_12 - ema_26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    histogram = macd_line - signal_line
-    
-    return {
-        "macd": float(macd_line.iloc[-1]),
-        "signal": float(signal_line.iloc[-1]),
-        "histogram": float(histogram.iloc[-1])
-    }
 
 
 def calculate_bollinger_bands(prices, period=20):
@@ -108,32 +127,39 @@ def calculate_volatility(prices):
 
 def analyze_equity_longterm(ticker: str):
     """
-    Equity/Long-term Investment Analysis
+    Equity/Long-term Investment Analysis - Optimized
     Focus: Fundamentals, Value, Growth potential, Dividend yields
     Timeframe: 1-5+ years
     """
-    info, stock, source, actual_ticker = enhance_stock_info_professional(ticker)
-    
-    if not info or not stock:
-        return {"error": "Unable to fetch stock data"}
-    
-    # Get historical data
-    hist = stock.history(period="5y")
-    if hist.empty:
-        hist = stock.history(period="1y")
-    
-    prices = hist['Close'].values
-    current_price = prices[-1] if len(prices) > 0 else info.get("currentPrice", 0)
-    
-    # Fundamental metrics
-    market_cap = info.get("marketCap", 0)
-    pe_ratio = info.get("trailingPE", 0)
-    pb_ratio = info.get("priceToBook", 0)
-    dividend_yield = info.get("dividendYield", 0) * 100 if info.get("dividendYield") else 0
-    roe = info.get("returnOnEquity", 0) * 100 if info.get("returnOnEquity") else 0
-    debt_to_equity = info.get("debtToEquity", 0)
-    profit_margin = info.get("profitMargins", 0) * 100 if info.get("profitMargins") else 0
-    revenue_growth = info.get("revenueGrowth", 0) * 100 if info.get("revenueGrowth") else 0
+    try:
+        info, stock, source, actual_ticker = enhance_stock_info_professional(ticker)
+        
+        if not info or not stock:
+            return {"error": "Unable to fetch stock data. Please verify the ticker symbol."}
+        
+        # Get historical data with timeout
+        try:
+            hist = stock.history(period="1y")  # Reduced from 5y for speed
+            if hist.empty:
+                return {"error": "No historical data available for this ticker"}
+        except Exception as e:
+            return {"error": f"Historical data unavailable: {str(e)}"}
+        
+        prices = hist['Close'].values
+        if len(prices) == 0:
+            return {"error": "Insufficient price data"}
+            
+        current_price = float(prices[-1])
+        
+        # Fundamental metrics with safe defaults
+        market_cap = safe_get(info, "marketCap", 0)
+        pe_ratio = safe_get(info, "trailingPE", 0)
+        pb_ratio = safe_get(info, "priceToBook", 0)
+        dividend_yield = safe_get(info, "dividendYield", 0) * 100
+        roe = safe_get(info, "returnOnEquity", 0) * 100
+        debt_to_equity = safe_get(info, "debtToEquity", 0)
+        profit_margin = safe_get(info, "profitMargins", 0) * 100
+        revenue_growth = safe_get(info, "revenueGrowth", 0) * 100
     
     # Calculate valuation score
     valuation_score = 50
@@ -835,21 +861,32 @@ def get_options_strategy_details(strategy, price, volatility):
 
 def get_trading_analysis(ticker: str, trading_type: str):
     """
-    Main function to get trading analysis based on type
+    Main function to get trading analysis based on type - Optimized with error handling
     """
-    trading_type = trading_type.lower().replace(" ", "_").replace("/", "_")
-    
-    if "equity" in trading_type or "long" in trading_type:
-        return analyze_equity_longterm(ticker)
-    elif "intraday" in trading_type:
-        return analyze_intraday(ticker)
-    elif "swing" in trading_type:
-        return analyze_swing(ticker)
-    elif "positional" in trading_type:
-        return analyze_positional(ticker)
-    elif "scalp" in trading_type:
-        return analyze_scalping(ticker)
-    elif "option" in trading_type:
-        return analyze_options(ticker)
-    else:
-        return {"error": "Invalid trading type. Choose from: equity_longterm, intraday, swing, positional, scalping, options"}
+    try:
+        trading_type = trading_type.lower().replace(" ", "_").replace("/", "_")
+        
+        # Route to appropriate analysis function
+        if "equity" in trading_type or "long" in trading_type:
+            result = analyze_equity_longterm(ticker)
+        elif "intraday" in trading_type:
+            result = analyze_intraday(ticker)
+        elif "swing" in trading_type:
+            result = analyze_swing(ticker)
+        elif "positional" in trading_type:
+            result = analyze_positional(ticker)
+        elif "scalp" in trading_type:
+            result = analyze_scalping(ticker)
+        elif "option" in trading_type:
+            result = analyze_options(ticker)
+        else:
+            return {"error": "Invalid trading type. Choose from: equity_longterm, intraday, swing, positional, scalping, options"}
+        
+        return result
+        
+    except Exception as e:
+        return {
+            "error": f"Analysis failed: {str(e)}",
+            "type": trading_type,
+            "message": "Please try again or contact support if the issue persists."
+        }
