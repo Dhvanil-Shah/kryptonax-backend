@@ -1077,6 +1077,23 @@ def health_check():
     """Lightweight health check endpoint for keep-alive pings"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+@app.get("/version")
+def version_info():
+    """Return the current deployed git commit and deployment info."""
+    commit = None
+    try:
+        import subprocess
+        commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        commit = None
+
+    return {
+        "status": "ok",
+        "commit": commit,
+        "render_commit": os.getenv("RENDER_COMMIT", None),
+        "render_branch": os.getenv("RENDER_GIT_BRANCH", None)
+    }
+
 # --- AUTH ENDPOINTS ---
 
 @app.post("/register")
