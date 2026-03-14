@@ -781,6 +781,7 @@ from dotenv import load_dotenv
 import time
 from quality_score import calculate_quality_score
 from professional_fetcher import enhance_stock_info_professional as enhance_stock_info  # Import quality score calculator
+from budget_fetcher import get_latest_budget, get_budget_by_year, get_available_budget_years
 
 # 1. LOAD ENVIRONMENT VARIABLES
 load_dotenv()
@@ -1573,6 +1574,29 @@ def get_global_trending(regions: str = "all", states: str = ""):
         "japan": ["7203.T", "6758.T", "9984.T", "6861.T", "6902.T", "8306.T", "9432.T"],  # Toyota, Sony, SoftBank, etc.
         "china": ["BABA", "BIDU", "JD", "PDD", "NIO", "XPEV", "LI"]  # ADRs for Chinese companies
     }
+
+
+# ==========================================
+#              BUDGET ENDPOINTS
+# ==========================================
+
+@app.get("/budget/latest")
+def budget_latest():
+    """Return latest Union Budget summary"""
+    return get_latest_budget()
+
+
+@app.get("/budget/{year}")
+def budget_by_year(year: str):
+    """Return Union Budget info for a specific year"""
+    return get_budget_by_year(year)
+
+
+@app.get("/budget/years")
+def budget_years():
+    """Return available budget years"""
+    return get_available_budget_years()
+
     
     # Parse states filter if provided
     states_filter = {}
