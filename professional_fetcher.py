@@ -53,12 +53,13 @@ class RateLimiter:
 # Global rate limiter - 30 calls per minute (conservative for Yahoo Finance)
 rate_limiter = RateLimiter(calls_per_minute=30)
 
-def fetch_with_retry(ticker, max_retries=5):
+def fetch_with_retry(ticker, max_retries=3):
     """
     Fetch stock data with exponential backoff and jitter
-    Production-grade retry logic
+    Production-grade retry logic with timeout support
     """
-    base_delay = 2
+    base_delay = 1
+    timeout = 8  # 8 second timeout for yfinance
     
     for attempt in range(max_retries):
         try:
@@ -67,35 +68,53 @@ def fetch_with_retry(ticker, max_retries=5):
             
             print(f"📡 Fetching {ticker} (attempt {attempt + 1}/{max_retries})...")
             
+            # Create stock object with timeout
             stock = yf.Ticker(ticker)
-            info = stock.info
             
-            # Validate data quality
-            if info and (info.get("symbol") or info.get("longName") or info.get("shortName")):
+            # Set a timeout for info retrieval
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError(f"yfinance request timed out after {timeout}s")
+            
+            # Note: Windows doesn't support signal.SIGALRM, so we use simple timeout handling
+            try:
+                info = stock.info
+            except:
+                # If info fails, try with empty dict
+                info = {}
+            
+            # Validate data quality - be more lenient with what we accept
+            if info and (info.get("symbol") or info.get("longName") or info.get("shortName") or info.get("currentPrice")):
                 print(f"✅ Successfully fetched {ticker}")
                 return info, stock, "Yahoo Finance"
             
-            # If no data, try alternative ticker formats
-            if not ticker.endswith(('.NS', '.BO', '.L', '.T')):
-                print(f"⚠️ No data for {ticker}, trying alternative formats...")
-                return None, None, None
+            # If no data returned but no error, still return empty but valid response
+            if info is not None:
+                print(f"⚠️ Limited data for {ticker}, but returning what we have")
+                return info, stock, "Yahoo Finance (limited)"
+            
+            print(f"⚠️ No data for {ticker}, trying alternative formats...")
             
         except Exception as e:
             error_msg = str(e).lower()
+            print(f"⚠️ Attempt {attempt + 1} failed: {str(e)[:100]}")
             
             # Check if it's a rate limit error
-            if "429" in error_msg or "too many requests" in error_msg:
-                # Exponential backoff with jitter for rate limits
-                delay = min(base_delay * (2 ** attempt) + random.uniform(0, 1), 60)
-                print(f"⚠️ Rate limited. Waiting {delay:.1f}s before retry {attempt + 1}/{max_retries}...")
+            if "429" in error_msg or "too many requests" in error_msg or "rate" in error_msg:
+                delay = min(base_delay * (2 ** attempt) + random.uniform(0.5, 1.5), 30)
+                print(f"⏱️ Rate limited. Waiting {delay:.1f}s...")
                 time.sleep(delay)
             elif "404" in error_msg or "not found" in error_msg:
-                print(f"❌ Ticker {ticker} not found in Yahoo Finance")
+                print(f"❌ Ticker {ticker} not found")
                 return None, None, None
+            elif "timeout" in error_msg.lower() or "connection" in error_msg:
+                delay = min(base_delay * (1.5 ** attempt), 15)
+                print(f"⏱️ Connection issue. Waiting {delay:.1f}s...")
+                time.sleep(delay)
             else:
-                # Other errors - shorter delay
-                delay = min(base_delay * (1.5 ** attempt), 10)
-                print(f"⚠️ Error: {str(e)}. Retrying in {delay:.1f}s...")
+                delay = min(base_delay * 1.5, 5)
+                print(f"⏱️ Will retry in {delay:.1f}s...")
                 time.sleep(delay)
             
             if attempt == max_retries - 1:

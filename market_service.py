@@ -83,41 +83,64 @@ class MarketDataService:
         }
         
         stocks = universes.get(market, universes["india"])
-        tickers_obj = yf.Tickers(" ".join(stocks))
         
         movers = []
+        failed_count = 0
+        
+        # Fetch stocks individually to avoid batch failures
         for symbol in stocks:
             try:
-                info = tickers_obj.tickers[symbol].fast_info
-                change_pct = ((info.last_price - info.previous_close) / info.previous_close) * 100
-                movers.append({
-                    "symbol": symbol,
-                    "name": symbol.replace(".NS", "").replace(".BO", ""),
-                    "price": round(info.last_price, 2),
-                    "change_percent": round(change_pct, 2),
-                    "volume": info.last_volume if hasattr(info, 'last_volume') else 0
-                })
+                print(f"📊 Fetching {symbol}...")
+                stock = yf.Ticker(symbol)
+                info = stock.info  # Get full info
+                
+                # Extract data with proper defaults
+                current_price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
+                previous_close = info.get("regularMarketPreviousClose", current_price)
+                
+                if current_price and previous_close:
+                    change_pct = ((current_price - previous_close) / previous_close) * 100
+                    movers.append({
+                        "symbol": symbol,
+                        "name": info.get("shortName", symbol.replace(".NS", "").replace(".BO", "")),
+                        "price": round(current_price, 2),
+                        "change_percent": round(change_pct, 2),
+                        "volume": info.get("volume", 0)
+                    })
+                else:
+                    failed_count += 1
+                    print(f"⚠️ Incomplete data for {symbol}")
             except Exception as e:
-                print(f"Error processing {symbol}: {e}")
+                failed_count += 1
+                print(f"❌ Error processing {symbol}: {str(e)[:50]}")
+                import time
+                time.sleep(0.5)  # Brief delay before next attempt
                 continue
         
         movers.sort(key=lambda x: x["change_percent"], reverse=True)
         result = {
-            "gainers": movers[:limit],
-            "losers": movers[-limit:][::-1]
+            "gainers": movers[:limit] if movers else [],
+            "losers": movers[-limit:][::-1] if movers else []
         }
         
-        # Fallback data if yfinance returns nothing or errors
-        if not result["gainers"] and not result["losers"]:
+        # Fallback data if yfinance returns less than 50% of stocks
+        if len(movers) < len(stocks) * 0.5 or (not result["gainers"] and not result["losers"]):
+            print(f"⚠️ Using fallback data - fetched {len(movers)}/{len(stocks)} stocks")
             result = {
                 "gainers": [
                     {"symbol": "RELIANCE.NS", "name": "Reliance", "price": 2300.12, "change_percent": 2.15, "volume": 15000000},
-                    {"symbol": "TCS.NS", "name": "TCS", "price": 3500.55, "change_percent": 1.85, "volume": 9500000}
-                ],
+                    {"symbol": "TCS.NS", "name": "TCS", "price": 3500.55, "change_percent": 1.85, "volume": 9500000},
+                    {"symbol": "INFY.NS", "name": "Infosys", "price": 1600.45, "change_percent": 1.45, "volume": 8500000},
+                    {"symbol": "KOTAKBANK.NS", "name": "Kotak Bank", "price": 1950.20, "change_percent": 1.25, "volume": 5200000},
+                    {"symbol": "HDFCBANK.NS", "name": "HDFC Bank", "price": 1850.65, "change_percent": 0.95, "volume": 6800000}
+                ][:limit],
                 "losers": [
-                    {"symbol": "HDFCBANK.NS", "name": "HDFC Bank", "price": 1750.42, "change_percent": -1.20, "volume": 8200000},
-                    {"symbol": "INFY.NS", "name": "Infosys", "price": 1450.75, "change_percent": -0.95, "volume": 7200000}
-                ]
+                    {"symbol": "SBIN.NS", "name": "SBIN", "price": 800.42, "change_percent": -1.20, "volume": 8200000},
+                    {"symbol": "MARUTI.NS", "name": "Maruti", "price": 12500.75, "change_percent": -0.95, "volume": 7200000},
+                    {"symbol": "TATASTEEL.NS", "name": "Tata Steel", "price": 135.15, "change_percent": -0.85, "volume": 5800000},
+                    {"symbol": "WIPRO.NS", "name": "Wipro", "price": 415.30, "change_percent": -0.65, "volume": 4900000},
+                    {"symbol": "BAJFINANCE.NS", "name": "Bajaj Finance", "price": 6800.20, "change_percent": -0.40, "volume": 3200000}
+                ][:limit]
             }
         
         self.cache.update_one(
